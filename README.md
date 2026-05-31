@@ -1,6 +1,8 @@
 # 信用卡周报自动化 Agent
 
 > 全自动抓取 → 分类 → 合并 → 出报告 → 持卡建议 → 归档知识库
+>
+> 支持三种模式：**Mode A** 全流程 / **Mode B** 多文档整合 / **Mode C** 仅数据处理（跳过持卡分析+归档）
 
 将信用卡周报的产出流程完全 **agent 化**，一句话触发完整流水线，归档数据沉淀为可检索的知识库。
 
@@ -51,6 +53,7 @@ run.bat
 # 或直接命令行
 python run_pipeline.py --mode a   # 全流程：公众号+官网抓取→生成周报
 python run_pipeline.py --mode b   # 整合模式：已有Word文档→整合+建议
+python run_pipeline.py --mode c   # 仅数据处理（Step1-4，跳过持卡分析+归档）
 ```
 
 ### 全流程编排（高级）
@@ -96,6 +99,14 @@ python _agent.py --archive-only
             ├── 提取图片并保留
             ├── LLM 整体分析生成持卡建议
             └── 输出整合版 Word 文档
+
+        └── Mode C: 仅数据处理 ────────────────────────────
+            │
+            ├── Step 1: 抓取微信文章
+            ├── Step 2: 抓取银行公告
+            ├── Step 3: 分类合并
+            │   └── 图片自动过滤（装饰/纯色/图标/分割线）
+            └── Step 4: 生成 Word 周报（跳过持卡分析+归档）
 ```
 
 ### 目录结构
@@ -203,6 +214,21 @@ LLM 整体分析生成持卡建议
 输出整合版 Word 文档（含层级目录 + 图片 + 建议）
 ```
 
+### Mode C: 仅数据处理
+
+```
+用户输入 URL 列表 → wechat-article-extractor + news-analyzer
+        │
+        ▼
+  Step 3: 分类 + 合并 → batch_merged.json
+        │
+        ▼
+  Step 4: Word 周报 ← 图片自动过滤
+        │               (装饰图/纯色图/图标/分割线)
+        ▼
+  输出 Word 周报（跳过持卡分析 + 归档）
+```
+
 ### 统一数据格式 `CreditCardBatch`
 
 ```json
@@ -245,6 +271,7 @@ run.bat
 # 或直接命令行
 python run_pipeline.py --mode a   # 全流程
 python run_pipeline.py --mode b   # 整合模式
+python run_pipeline.py --mode c   # 仅数据处理（跳过持卡分析+归档）
 ```
 
 **Mode A: 全流程**
@@ -255,6 +282,12 @@ python run_pipeline.py --mode b   # 整合模式
 **Mode B: 整合模式**
 - 输入已有 Word 文档路径（每行一个）
 - 自动整合 + 层级保留 + 图片保留 + 整体分析建议
+
+**Mode C: 仅数据处理**
+- 输入公众号文章链接（每行一个）
+- 输入银行官网抓取天数（默认7）
+- 生成周报，跳过持卡分析 + 归档
+- 图片自动过滤：跳过装饰图/纯色图/图标/分割线
 
 ### 全流程编排（高级）
 
@@ -462,6 +495,9 @@ SCORE_RULES = {
 ### M5 — 持续优化
 - [x] 三层分类器替代 LLM 自动分类（common/classifier.py）
 - [x] 来源/银行自动识别（common/entity_resolver.py，17 家银行 + 15 公众号映射）
+- [x] Mode C 仅数据处理（Step1-4 跳过持卡分析+归档）
+- [x] 图片四层过滤（装饰图/纯色图/图标/分割线自动跳过）
+- [x] 数据质量修复（标题"未知推出"、重复词去重、样板话跳跃）
 - [ ] Web 管理端 / 定时任务
 - [ ] 增量抓取（只抓上次归档后的新公告）
 
@@ -503,6 +539,7 @@ SCORE_RULES = {
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
+| v0.15 | 2026-06-10 | Mode C（仅 Step1-4，跳过持卡分析+归档）、图片四层过滤（文件大小/最小尺寸/像素方差）、3 个数据质量修复（标题"未知推出"、去重加强、样板话跳过）、run.bat 菜单补 C 选项 |
 | v0.14 | 2026-06-08 | P3 目录结构整理（src/ 包 + 根级 stub + scripts/ + docs/）、P1 Word 修复逻辑迁移到 normalizer、P2 confidence 打分区分度优化、188 测试全通过 |
 | v0.13 | 2026-06-07 | 验收修复：来源字段净化、分类逻辑统一（删除 3 处本地分类函数）、结构内容清洁（_trim_marketing_intro / _safe_truncate / structured_clean）、display_fields 参数化 |
 | v0.12 | 2026-06-06 | 多主题公众号文章拆分：文章信封、主题拆分引擎（6 信号检测 + 切点分割 + 过拆修正 + 单主题回退）、step3_merge 集成、Schema 扩 4 字段、27 测试 + 全量 165 passed |
