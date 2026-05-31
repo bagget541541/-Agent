@@ -1,0 +1,25 @@
+# 信用卡周报自动化项目 - 核心依赖
+# 安装: pip install -r requirements.txt
+
+# === 核心依赖 ===
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+python-docx>=1.2.0
+defusedxml>=0.7.1
+
+# === 微信文章抓取 ===
+playwright>=1.40.0
+html2text>=2020.1.16
+
+# === OCR 图片文字提取 (可选) ===
+# pytesseract>=0.3.10
+# Pillow>=10.0.0
+
+# === LLM 评分 (可选) ===
+# openai>=1.0.0
+
+# === 数据处理 ===
+lxml>=5.0.0
+
+# === 工具 ===
+pyyaml>=6.0

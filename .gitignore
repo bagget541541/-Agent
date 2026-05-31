@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Generated / Output files (not dirs)
+Output
+Generate
+err.txt
+out.txt
+
+# Data artifacts — generated at runtime, not committed
+data/archive/
+data/review/
+data/images/
+data/bm25_cache.pkl
+data/*.json
+data/*.md
+
+# IDE / Agent cache
+.atomcode/
+.claude/
+
+# Skill-generated artifacts
+wechat-article-extractor/batch_articles_merged.md
+wechat-article-extractor/batch_result.json
+data/wechat_monitor/articles/
+data/wechat_monitor/history.json
+data/Weekly_Report_*.docx
+
+# User uploaded files
+用户上传_*.docx
+
+# Config with secrets
+.env
+*.env.local
+# .env.example is safe for commit

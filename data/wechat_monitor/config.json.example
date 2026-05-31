@@ -1,0 +1,32 @@
+{
+  "accounts": [
+    {
+      "name": "秦农银行信用卡",
+      "biz": "MzI3NjA3MTYxMA==",
+      "category": "银行信用卡",
+      "enabled": true
+    },
+    {
+      "name": "南京银行信用卡",
+      "biz": "Mzk0ODE3MTYxMA==",
+      "category": "银行信用卡",
+      "enabled": true
+    },
+    {
+      "name": "招商银行信用卡",
+      "biz": "MzI3NjA3MTYxMA==",
+      "category": "银行信用卡",
+      "enabled": true
+    },
+    {
+      "name": "交通银行信用卡",
+      "biz": "MzI3NjA3MTYxMA==",
+      "category": "银行信用卡",
+      "enabled": true
+    }
+  ],
+  "rsshub_base_url": null,
+  "fallback_urls": [],
+  "max_articles_per_fetch": 10,
+  "fetch_interval_hours": 24
+}
