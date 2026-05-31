@@ -138,6 +138,10 @@ def _normalize_wechat_article(raw: dict, url: str = "") -> dict:
         or raw.get("summary")
         or ""
     )
+    # 修复2：过滤纯广告声明文本（如公众号图片文的 "以上内容为广告"）
+    _AD_DISCLAIMERS = ["以上内容为广告", "本文为广告", "此内容为广告", "以上为广告"]
+    if content_text.strip() in _AD_DISCLAIMERS:
+        content_text = ""
     images = raw.get("images") or []
     # 正文为空但有图片时，用标题做文本兜底
     if not content_text and images:

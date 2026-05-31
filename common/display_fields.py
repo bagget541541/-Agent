@@ -49,6 +49,62 @@ _ACTION_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+# ── 活动标题样板话开头列表（应跳过，抽取真正活动名） ──
+_ACTIVITY_BOILERPLATE = [
+    "一、活动时间", "二、活动对象", "三、活动内容", "四、活动细则",
+    "一、活动对象", "二、活动内容", "三、活动时间",
+    "活动时间", "活动对象", "活动内容", "活动细则", "活动规则",
+    "活动详情", "活动简介", "活动主题", "报名时间", "消费达标时间",
+    "二、活动", "三、", "四、", "五、",
+]
+
+
+def _extract_activity_name(text: str) -> str:
+    """从活动正文中抽取真正活动名称，跳过样板话及纯日期/数字开头。"""
+    if not text:
+        return ""
+
+    # 1. 跳过样板话前缀
+    remaining = text
+    for boiler in _ACTIVITY_BOILERPLATE:
+        if remaining.startswith(boiler):
+            remaining = remaining[len(boiler):].lstrip("：: \n")
+            break
+
+    # 2. 逐句扫描，跳过纯日期/数字片段和编号样板话，找到第一句有意义文本
+    import re as _re
+    for sep in ["。", "！", "？", "\n"]:
+        parts = remaining.split(sep)
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if _is_date_or_number_fragment(part):
+                continue
+            # 跳过编号样板话（如"二、活动对象 农行..."），整句都不是活动名
+            # 但"三、活动内容 Visa世界杯"→ 样板话后面的内容是活动名
+            matched_boiler = None
+            for boiler in _ACTIVITY_BOILERPLATE:
+                if part.startswith(boiler):
+                    matched_boiler = boiler
+                    break
+            if matched_boiler:
+                # 如果样板话本身含"内容"两个字 → 后面的内容就是活动名
+                if "活动内容" in matched_boiler:
+                    rest = part[len(matched_boiler):].lstrip("：: \n").strip()
+                    if rest and not _is_date_or_number_fragment(rest):
+                        return rest
+                # 否则跳过整句，继续往下找
+                continue
+            # 没有匹配到任何样板话 → 这是真正的活动名
+            return part
+        break  # 只用第一个分隔符逐句拆分
+
+    # 3. 全都没意义 → 返回最长的片段
+    best = max(remaining.split("。"), key=lambda x: len(x.strip()))
+    return best.strip()
+
+
 def _generate_title(
     bank: str,
     category: str,
@@ -57,6 +113,10 @@ def _generate_title(
 ) -> str:
     """按分类生成主谓宾结构标题。"""
     bank = bank or fallback_title or "银行"
+
+    # 修复1：银行无法识别时，宁可保留原标题也不生成"未知推出优惠活动"
+    if bank in ("未知", "银行"):
+        return fallback_title or f"{bank}推出优惠活动"
 
     if category == "新卡":
         card_name = (structured.get("卡种") or "").strip()
@@ -67,6 +127,11 @@ def _generate_title(
     if category == "活动":
         activity = (structured.get("活动内容") or "").strip()
         if activity:
+            # 修复3：优先提取真正活动名，而不是取正文前30字
+            activity_name = _extract_activity_name(activity)
+            if activity_name:
+                display = _safe_truncate(activity_name, 30)
+                return f"{bank}活动：{display}"
             return f"{bank}活动：{_safe_truncate(activity, 30)}"
         return f"{bank}推出优惠活动"
 
