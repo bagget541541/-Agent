@@ -131,16 +131,64 @@ def mode_b():
     return success
 
 
+def mode_c():
+    """Mode C: Steps 1-4 only, output Markdown with images"""
+    print("\nEnter WeChat article URLs (one per line, empty line to finish):")
+    print("  Example: https://mp.weixin.qq.com/s/xxxxx")
+    print("  Tip: You can paste multiple URLs, one per line")
+    print()
+
+    urls = []
+    while True:
+        url = input("URL> ").strip()
+        if not url:
+            break
+        if "mp.weixin.qq.com" in url:
+            urls.append(url)
+            print(f"  OK added ({len(urls)} total)")
+        else:
+            print(f"  SKIP Not a WeChat link, skipped")
+
+    print(f"\nTotal: {len(urls)} WeChat URLs")
+
+    # Bank scraping days
+    days_input = input("\nBank scraping days (default 7): ").strip()
+    days = int(days_input) if days_input.isdigit() else 7
+    print(f"  Scraping last {days} days of bank announcements")
+
+    # Build command
+    cmd_parts = ["python _agent.py", "--mode c"]
+    if urls:
+        cmd_parts.append(f"--wechat-url {' '.join(urls)}")
+    cmd_parts.append(f"--bank-days {days}")
+
+    # Execute
+    success = run_step("Running Mode C (Steps 1-4, MD output)", " ".join(cmd_parts))
+
+    if success:
+        print("\n" + "="*60)
+        print("  Mode C completed!")
+        print("="*60)
+        for f in DATA_DIR.glob("*.md"):
+            print(f"  [File] {f.name}")
+    else:
+        print("\n[Warning] Pipeline may have errors, check output above")
+
+    return success
+
+
 def main():
     """Main function"""
     import argparse
 
     parser = argparse.ArgumentParser(description='Credit Card Weekly Report Entry')
-    parser.add_argument('--mode', choices=['a', 'b'], default='a', help='Run mode (default: a)')
+    parser.add_argument('--mode', choices=['a', 'b', 'c'], default='a', help='Run mode (default: a)')
     args = parser.parse_args()
 
     if args.mode == 'a':
         success = mode_a()
+    elif args.mode == 'c':
+        success = mode_c()
     else:
         success = mode_b()
 

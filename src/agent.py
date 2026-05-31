@@ -714,6 +714,148 @@ def step4_generate_report(batch: CreditCardBatch, output_dir: str = None) -> str
         return None
 
 
+def step4_generate_md_report(batch: CreditCardBatch, output_dir: str = None) -> str | None:
+    """
+    Step 4b: Generate Markdown report
+
+    Args:
+        batch: CreditCardBatch object
+        output_dir: Output directory
+
+    Returns:
+        Generated md file path, or None on failure
+    """
+    print("\n" + "=" * 60)
+    print("Step 4b: Generate Markdown report")
+    print("=" * 60)
+
+    try:
+        output_dir = Path(output_dir or PROJECT_ROOT / "data")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        md_file = output_dir / f"Weekly_Report_{batch.batch_label}.md"
+
+        # Group items by category
+        categories: dict[str, list[CreditCardItem]] = {}
+        for item in batch.items:
+            cat = item.category or "其他"
+            categories.setdefault(cat, []).append(item)
+
+        # Category ordering
+        cat_order = ["新卡", "权益变更", "活动", "公告", "其他"]
+        cat_emoji = {"新卡": "🆕", "权益变更": "🔄", "活动": "🏷️", "公告": "📋", "其他": "📌"}
+
+        lines: list[str] = []
+        lines.append(f"# 信用卡周报 - {batch.batch_label}")
+        lines.append(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+
+        all_images: list[tuple[str, str]] = []  # (category, alt_text, relative_path)
+
+        for cat in cat_order:
+            items = categories.get(cat, [])
+            if not items:
+                continue
+            emoji = cat_emoji.get(cat, "📌")
+            lines.append(f"## {emoji} {cat}")
+            lines.append("")
+
+            for item in items:
+                raw = _item_to_mapping(item)
+                title = raw.get("title", "无标题")
+                highlight = raw.get("highlight_summary") or raw.get("structured", {}).get("summary", "")
+                bank = raw.get("bank", "")
+                source = raw.get("source", "")
+                url = raw.get("url", "")
+                structured = raw.get("structured", {}) or {}
+                raw_text = raw.get("raw_text", "")
+                images = raw.get("images", []) or []
+
+                lines.append(f"### {title}")
+                lines.append("")
+
+                # 亮点摘要（加粗）
+                if highlight:
+                    lines.append(f"**亮点：** {highlight}")
+                    lines.append("")
+
+                # 来源/银行
+                source_info = []
+                if bank:
+                    source_info.append(f"银行：{bank}")
+                if source:
+                    source_info.append(f"来源：{source}")
+                if source_info:
+                    lines.append(" | ".join(source_info))
+                    lines.append("")
+
+                # 原文链接
+                if url:
+                    lines.append(f"[原文链接]({url})")
+                    lines.append("")
+
+                # 结构化字段（key-value列表）
+                if structured:
+                    lines.append("**结构化信息：**")
+                    lines.append("")
+                    for key, value in structured.items():
+                        if isinstance(value, (list, dict)):
+                            value_str = json.dumps(value, ensure_ascii=False)
+                        else:
+                            value_str = str(value)
+                        lines.append(f"- **{key}**：{value_str}")
+                    lines.append("")
+
+                # raw_text（截取前500字）
+                if raw_text:
+                    snippet = raw_text[:500]
+                    if len(raw_text) > 500:
+                        snippet += "..."
+                    lines.append("**原文摘要：**")
+                    lines.append("")
+                    lines.append(snippet)
+                    lines.append("")
+
+                # images（Markdown 图片语法，相对路径）
+                if images:
+                    lines.append("**相关图片：**")
+                    lines.append("")
+                    for img in images:
+                        if img.startswith("http://") or img.startswith("https://"):
+                            rel_path = img
+                        else:
+                            try:
+                                rel_path = os.path.relpath(img, str(output_dir))
+                            except Exception:
+                                rel_path = img
+                        alt_text = f"{title} - {os.path.basename(rel_path)}"
+                        lines.append(f"![{alt_text}]({rel_path})")
+                        all_images.append((cat, alt_text, rel_path))
+                    lines.append("")
+
+                lines.append("---")
+                lines.append("")
+
+        # 图片索引
+        if all_images:
+            lines.append("## 🖼️ 图片索引")
+            lines.append("")
+            for idx, (cat, alt, path) in enumerate(all_images, 1):
+                lines.append(f"{idx}. [{alt}]({path}) — 分类：{cat}")
+            lines.append("")
+
+        # Write to file
+        with open(md_file, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines))
+
+        print(f"  Markdown report generated: {md_file}")
+        return str(md_file)
+
+    except Exception as e:
+        print(f"  [Error] Markdown report generation failed: {e}")
+        return None
+
+
 def step5_analyze(batch: CreditCardBatch, scorer: str = "keyword", model: str = None) -> dict:
     """
     Step 5: Card holding analysis
@@ -1093,6 +1235,7 @@ def run_pipeline(
     model: str = None,
     skip_fetch: bool = False,
     archive_only: bool = False,
+    mode: str = 'a',
 ):
     """
     运行全流程（统一错误处理）
@@ -1104,6 +1247,7 @@ def run_pipeline(
         model: LLM 模型
         skip_fetch: 跳过抓取步骤
         archive_only: 仅归档
+        mode: 运行模式 ('a'/'b' 走完整流程, 'c' 仅 Step4 生成 md 报告 → Step7 归档)
     """
     from common.errors import PipelineResult
 
@@ -1201,21 +1345,34 @@ def run_pipeline(
         print(f"\n  [LLM Review] Skipped: {e}")
 
     # Step 4: 生成报告
-    report_file = result.run_step(
-        "Step4 生成报告",
-        lambda: step4_generate_report(batch),
-        default=None,
-    )
+    if mode == 'c':
+        report_file = result.run_step(
+            "Step4 生成 MD 报告",
+            lambda: step4_generate_md_report(batch),
+            default=None,
+        )
+    else:
+        report_file = result.run_step(
+            "Step4 生成报告",
+            lambda: step4_generate_report(batch),
+            default=None,
+        )
 
-    # Step 5: 分析
-    analysis = result.run_step(
-        "Step5 持卡分析",
-        lambda: step5_analyze(batch, scorer, model),
-        default={},
-    )
+    # Step 5: 分析（mode c 跳过）
+    if mode == 'c':
+        analysis = {}
+        print("\n[Skip] Step5 (mode c)")
+    else:
+        analysis = result.run_step(
+            "Step5 持卡分析",
+            lambda: step5_analyze(batch, scorer, model),
+            default={},
+        )
 
-    # Step 6: 追加持卡建议（需要 report_file 存在）
-    if report_file:
+    # Step 6: 追加持卡建议（mode c 跳过，需要 report_file 存在）
+    if mode == 'c':
+        print("\n[Skip] Step6 (mode c)")
+    elif report_file:
         result.run_step(
             "Step6 追加建议",
             lambda: step6_append_suggestions(report_file, analysis),
@@ -1278,6 +1435,8 @@ def main():
     parser.add_argument("--model", help="LLM 模型名称")
     parser.add_argument("--skip-fetch", action="store_true", help="跳过抓取步骤")
     parser.add_argument("--archive-only", action="store_true", help="仅归档")
+    parser.add_argument("--mode", choices=["a", "c"], default="a",
+                        help="运行模式: a 完整流程, c 仅生成 md 报告 + 归档 (默认 a)")
 
     args = parser.parse_args()
 
@@ -1288,6 +1447,7 @@ def main():
         model=args.model,
         skip_fetch=args.skip_fetch,
         archive_only=args.archive_only,
+        mode=args.mode,
     )
 
 

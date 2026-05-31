@@ -19,6 +19,7 @@ echo Select mode:
 echo.
 echo   [A] Full pipeline - WeChat URLs + Bank scraping -> Generate report
 echo   [B] Merge mode - Existing Word docs -> Merge + Suggestions -> Output
+echo   [C] Quick mode - Step 1-4 only -> Markdown with images
 echo   [Q] Exit
 echo.
 set /p choice=Enter choice (A/B/Q, default A):
@@ -28,6 +29,8 @@ if /i "%choice%"=="A" goto :mode_a
 if /i "%choice%"=="a" goto :mode_a
 if /i "%choice%"=="B" goto :mode_b
 if /i "%choice%"=="b" goto :mode_b
+if /i "%choice%"=="C" goto :mode_c
+if /i "%choice%"=="c" goto :mode_c
 if /i "%choice%"=="Q" goto :end
 if /i "%choice%"=="q" goto :end
 
@@ -51,6 +54,15 @@ echo   Mode B: Merge Mode (Existing Docs + Suggestions)
 echo ============================================================
 echo.
 python run_pipeline.py --mode b
+goto :done
+
+:mode_c
+echo.
+echo ============================================================
+echo   Mode C: Quick Mode (Step 1-4 only -> Markdown with images)
+echo ============================================================
+echo.
+python run_pipeline.py --mode c
 goto :done
 
 :done
