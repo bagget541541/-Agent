@@ -40,39 +40,45 @@ FLAG_RULES = {
 # ── 标记生成 ────────────────────────────────────────────
 
 def generate_review_flags(item: CreditCardItem) -> list[str]:
-    """根据 item 内容生成审核标记。
+    """根据连续 confidence 分数生成审核标记。
 
-    规则：
-    - category 置信度 < 0.6 或 category_candidates 最高分 < 0.5 → needs_category_review
-    - bank 为空且 source=wechat → needs_source_review
-    - 标题为空或长度 < 3 → needs_title_review
-    - structured 为空 → needs_detail_review
+    阈值校准（适配 0.0-1.0 连续分数）：
+    - category 0<score<0.7 或 top_candidate<0.5 → needs_category_review
+    - bank < 0.5 → needs_source_review
+    - title < 0.6 或标题长度 < 3 → needs_title_review
+    - structured < 0.5 或 structured 为空 → needs_detail_review
     - publish_time 为空 → needs_time_review
-    - 图片路径不含 item_id → needs_image_review
+    - overall < 0.5 → needs_overall_review
     """
     flags = []
+    conf = item.confidence or {}
 
     # Category
-    cat_conf = item.confidence.get("category", 0.0) if item.confidence else 0.0
-    if cat_conf < 0.6 and cat_conf > 0:
+    cat_conf = conf.get("category", 0.0)
+    if 0 < cat_conf < 0.7:
         flags.append("needs_category_review")
     if item.category_candidates:
         top_score = item.category_candidates[0][1] if item.category_candidates[0] else 0
         if top_score < 0.5:
             flags.append("needs_category_review")
 
-    # Source
-    if not item.bank and item.source == "wechat":
-        flags.append("needs_source_review")
-    if not item.publisher_name and not item.author:
+    # Bank
+    bank_conf = conf.get("bank", 0.0)
+    if bank_conf < 0.5:
         flags.append("needs_source_review")
 
     # Title
+    title_conf = conf.get("title", 0.0)
+    if title_conf < 0.6:
+        flags.append("needs_title_review")
     title_text = item.title or item.raw_title or ""
     if not title_text or len(title_text.strip()) < 3:
         flags.append("needs_title_review")
 
     # Detail (structured)
+    struct_conf = conf.get("structured", 0.0)
+    if struct_conf < 0.5:
+        flags.append("needs_detail_review")
     if not item.structured:
         flags.append("needs_detail_review")
 
@@ -80,12 +86,19 @@ def generate_review_flags(item: CreditCardItem) -> list[str]:
     if not item.publish_time:
         flags.append("needs_time_review")
 
+    # Overall quality gate
+    overall = conf.get("overall", 0.0)
+    if overall < 0.5:
+        flags.append("needs_overall_review")
+
     # 多主题拆分
     if item.is_multi_topic_split:
         if item.topic_split_confidence < 0.6 and item.topic_split_confidence > 0:
-            flags.append("needs_topic_split_review")
+            if "needs_topic_split_review" not in flags:
+                flags.append("needs_topic_split_review")
         if item.topic_split_confidence < 0.4 and item.topic_split_confidence > 0:
-            flags.append("topic_boundary_low_confidence")
+            if "topic_boundary_low_confidence" not in flags:
+                flags.append("topic_boundary_low_confidence")
 
     # P1-4: 图片归属校验
     if item.images:
@@ -96,6 +109,20 @@ def generate_review_flags(item: CreditCardItem) -> list[str]:
 
     # 去重
     return list(dict.fromkeys(flags))
+
+
+# ── 严重度分级 ──────────────────────────────────────────
+
+_CRITICAL_FLAGS = {"needs_category_review", "needs_source_review", "needs_overall_review"}
+
+
+def _severity(flags: list[str]) -> str:
+    """根据标记类型和数量判定严重度。"""
+    if any(f in _CRITICAL_FLAGS for f in flags):
+        return "high"
+    if len(flags) >= 3:
+        return "medium"
+    return "low"
 
 
 # ── 审核队列构建 ────────────────────────────────────────
@@ -132,14 +159,19 @@ def build_review_queue(items: list[CreditCardItem]) -> dict:
                 "bank": item.bank,
                 "category": item.category,
                 "flags": flags,
+                "severity": _severity(flags),
                 "confidence": item.confidence,
                 "evidence": item.evidence,
             })
+
+    # 按 overall confidence 升序排列（最低分 = 最优先审核）
+    flagged.sort(key=lambda x: (x.get("confidence") or {}).get("overall", 0.0))
 
     return {
         "meta": {
             "total": len(items),
             "flagged_count": len(flagged),
+            "high_severity": sum(1 for f in flagged if f["severity"] == "high"),
             "generated_at": datetime.now().isoformat(timespec="seconds"),
         },
         "flagged_items": flagged,
@@ -154,22 +186,34 @@ def _format_queue_md(queue_data: dict) -> str:
     lines = [
         f"# 审核清单 — 待复核条目",
         f"",
-        f"**总计**: {meta['total']} 条 | **待复核**: {meta['flagged_count']} 条 | **生成时间**: {meta['generated_at']}",
+        f"**总计**: {meta['total']} 条 | **待复核**: {meta['flagged_count']} 条 | "
+        f"**高优先级**: {meta.get('high_severity', '?')} 条 | "
+        f"**生成时间**: {meta['generated_at']}",
         f"",
     ]
     if not queue_data["flagged_items"]:
-        lines.append("✅ 无可疑条目。")
+        lines.append("无可疑条目。")
         return "\n".join(lines)
 
+    _sev_labels = {"high": "!!! 高", "medium": "!! 中", "low": "! 低"}
+
     for i, fi in enumerate(queue_data["flagged_items"], 1):
+        conf = fi.get("confidence") or {}
+        sev = fi.get("severity", "low")
+        sev_label = _sev_labels.get(sev, sev)
+
         lines.append(f"---")
-        lines.append(f"### {i}. {fi['title']}")
+        lines.append(f"### {i}. [{sev_label}] {fi['title']}")
         lines.append(f"")
         lines.append(f"- **银行**: {fi.get('bank', '未知')}")
         lines.append(f"- **分类**: {fi.get('category', '未知')}")
         lines.append(f"- **URL**: {fi.get('url', '无')}")
         lines.append(f"- **审核标记**: {', '.join(fi.get('flags', []))}")
-        lines.append(f"- **置信度**: {fi.get('confidence', {})}")
+        lines.append(f"- **综合置信度**: {conf.get('overall', '?'):.3f}")
+        lines.append(f"  - 分类: {conf.get('category', '?'):.3f} | "
+                     f"银行: {conf.get('bank', '?'):.3f} | "
+                     f"标题: {conf.get('title', '?'):.3f} | "
+                     f"结构化: {conf.get('structured', '?'):.3f}")
         if fi.get("evidence"):
             evidence_str = "; ".join(
                 f"{k}: {', '.join(v)}" for k, v in fi["evidence"].items() if v

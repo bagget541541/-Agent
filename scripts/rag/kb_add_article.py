@@ -4,14 +4,14 @@
 添加新文章到现有 RAG 知识库。
 
 用法:
-  python kb_add_article.py <markdown文件路径>
-  python kb_add_article.py <目录路径>   # 批量添加目录下所有 .md 文件
+  python scripts/rag/kb_add_article.py <markdown文件路径>
+  python scripts/rag/kb_add_article.py <目录路径>   # 批量添加目录下所有 .md 文件
 """
 
 import os, re, json, sys
 from datetime import datetime
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KB_PATH = os.path.join(HERE, "data", "articles_kb.json")
 BM25_CACHE = os.path.join(HERE, "data", "bm25_cache.pkl")
 
@@ -76,46 +76,44 @@ def parse_fm(text):
 
 
 def strip_md(text):
-    text = re.sub(r"^---\s*" + NL + r".*?" + NL + r"---", "", text, flags=re.DOTALL)
+    text = re.sub(r"^---.*?---\s*", "", text, flags=re.DOTALL | re.MULTILINE)
     text = re.sub(r"!\[.*?\]\(.*?\)", "", text)
-    text = re.sub(r"\[([^\]]*?)\]\(https?://[^\s\)]+\)", r"\1", text)
-    text = re.sub(r"\(https?://[^\s\)]+\)", "", text)
-    text = re.sub(r"^>\s*", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
-    text = re.sub(NL + "{4,}", NL + NL, text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"[#*>`~_]", "", text)
+    text = re.sub(NL + r"\s*" + NL + r"\s*" + NL, NL + NL, text)
     return text.strip()
 
 
 def extract_banks(text):
-    banks = set()
-    for bank, kws in BANK_MAP:
+    found = []
+    for bname, kws in BANK_MAP:
         for kw in kws:
             if kw in text:
-                banks.add(bank)
+                found.append(bname)
                 break
-    return sorted(banks, key=lambda b: -len(b))
+    return found
 
 
 def classify(title, text):
-    combined = title + NL + text
-    cats = []
+    cats = {}
+    combined = title + " " + text
     for cat, kws in CATEGORY_KWS.items():
         for kw in kws:
             if kw in combined:
-                cats.append(cat)
-                break
-    return cats if cats else ["一般资讯"]
+                cats[cat] = cats.get(cat, 0) + 1
+    if not cats:
+        cats["其他"] = 1
+    return cats
 
 
 def is_card_related(title, text, tags):
-    ck = ["信用卡", "年费", "积分", "刷卡", "申卡", "办卡", "销卡", "持卡",
-          "卡评分", "卡权益", "返现", "里程", "贵宾厅", "小白金", "神卡", "小众卡"]
-    for kw in ck:
-        if kw in title + chr(32) + text[:200]:
-            return True
-    for kw in ["读书笔记", "书单", "职场", "水浒", "亲子"]:
-        if kw in title:
-            return False
+    if "信用卡" in tags:
+        return True
+    if any(kw in title for kw in ["信用卡","用卡","刷卡","积分","返现","权益","年费","额度","提额"]):
+        return True
+    banks_found = extract_banks(text)
+    if len(banks_found) >= 2:
+        return True
     return False
 
 
@@ -209,7 +207,7 @@ def process_article(fpath):
 
 def main():
     if len(sys.argv) < 2:
-        print("用法: python kb_add_article.py <文件.md> 或 <目录>")
+        print("用法: python scripts/rag/kb_add_article.py <文件.md> 或 <目录>")
         sys.exit(1)
 
     target = sys.argv[1]

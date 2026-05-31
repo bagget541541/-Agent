@@ -1,4 +1,6 @@
-import sys; sys.path.insert(0, '.')
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from common.article_envelope import build_article_envelope
 from common.topic_splitter import detect_multi_topic, split_article_into_topics
 from common.normalizer import normalize_topic

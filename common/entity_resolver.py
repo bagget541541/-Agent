@@ -163,12 +163,32 @@ def resolve_bank(
     if not evidence:
         evidence.append(f"bank: 默认: {bank}")
 
+    # bank_confidence: 根据解析路径映射为连续值 0.0-1.0
+    bank_confidence = 0.0
+    if evidence:
+        last_evidence = evidence[-1]
+        if "指定参数" in last_evidence and "非标准" not in last_evidence:
+            bank_confidence = 1.0
+        elif "指定参数(非标准)" in last_evidence:
+            bank_confidence = 0.85
+        elif "公众号映射" in last_evidence:
+            bank_confidence = 0.9
+        elif "作者名包含" in last_evidence:
+            bank_confidence = 0.75
+        elif "标题包含" in last_evidence:
+            bank_confidence = 0.7
+        elif "正文包含" in last_evidence:
+            bank_confidence = 0.5
+        elif "未识别到银行信息" in last_evidence:
+            bank_confidence = 0.0
+
     return {
         "bank": bank,
         "issuer_bank": bank,
         "publisher_name": publisher_name,
         "source_name": source_name,
         "evidence": evidence,
+        "bank_confidence": bank_confidence,
     }
 
 

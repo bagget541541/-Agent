@@ -29,7 +29,6 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(_HERE, '..', '..'))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from common.utils import extract_bank_name
 from utils import setup_docx_cached, safe_truncate, IMAGE_WIDTH_CM
 
 
@@ -131,208 +130,6 @@ def build_report_title(items, batch_label: str = "") -> str:
     if len(titles) == 1:
         return f"{base}亮点：{titles[0]}"
     return f"{base}亮点：{titles[0]}、{titles[1]}"
-
-
-def _normalize_highlight_text(text: str) -> str:
-    text = clean_xml_text(text or "")
-    if not text:
-        return ""
-
-    text = re.sub(r"\[图片核心内容\s*-\s*[^\]]+\]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    for prefix in [
-        "尊敬的客户：", "尊敬的持卡人：", "附件：", "点击可查阅：",
-        "一、活动时间", "二、活动对象", "三、活动内容", "四、活动细则",
-    ]:
-        if text.startswith(prefix):
-            text = text[len(prefix):].strip()
-
-    text = re.sub(r"^(关于)?启用新版", "启用新版", text)
-    text = re.sub(r"^(关于)?新增", "新增", text)
-    text = text.replace("特此公告。", "").strip()
-    text = re.sub(r"\s+", " ", text).strip(" ：:;；，,。")
-    return text
-
-
-def _skip_intro_marketing(text: str) -> str:
-    """跳过文章开头的广告/引言段落，定位到核心内容开始处。"""
-    if not text:
-        return text
-
-    # 常见广告/引言关键词
-    intro_kw = [
-        '说在前头', '星标', '扫码', '可以扫码', '添加客服', '一手线报',
-        '公众号推送机制改变', '推送机制改变', '★星标', '星标方法',
-        '进群', '撸毛', '一起撸毛', '卡友交流群', '往期精彩',
-    ]
-    # 跳过以广告/引言开头的段落
-    for kw in intro_kw:
-        pos = text.find(kw)
-        if 0 <= pos <= 50:  # 引言在开头 50 字内
-            # 找到这段结束位置（下一个句号或换行）
-            end = text.find('。', pos)
-            if end > 0 and end < len(text) - 10:
-                return _skip_intro_marketing(text[end + 1:].strip())
-    return text
-
-
-def _build_highlight(item: dict) -> str:
-    title = clean_xml_text(item.get('title', '')).strip()
-    bank = clean_xml_text(item.get('bank', '')).strip()
-    cat = item.get('category', '')
-    structured = item.get('structured', {}) or {}
-
-    def _first_sentence(text: str) -> str:
-        normalized = _normalize_highlight_text(text)
-        if not normalized:
-            return ''
-        parts = re.split(r'[。！？!?；;]', normalized)
-        for part in parts:
-            part = part.strip(' ：:;；，,。')
-            if len(part) >= 6:
-                return part
-        return normalized
-
-    def _strip_marketing_tail(text: str) -> str:
-        text = re.sub(r'珍藏周边礼等你领.*$', '', text).strip()
-        text = re.sub(r'【[^】]+】$', '', text).strip()
-        text = re.sub(r'\s+', '', text)
-        return text
-
-    def _extract_object_from_title(text: str) -> str:
-        text = text.replace('关于', '').replace('的公告', '').replace('的通告', '').strip()
-        m = re.search(r'《([^》]+)》', text)
-        if m:
-            obj = m.group(1)
-            obj = obj.replace('广发银行信用卡中心', '')
-            obj = obj.replace('招商银行股份有限公司信用卡中心', '')
-            obj = obj.strip()
-            return obj
-        return text
-
-    if cat == '新卡':
-        detail = structured.get('详情', '')
-        card_name = ''
-        if 'Visa全球支付白金卡' in detail or 'Visa全球支付白金卡' in title:
-            card_name = 'Visa全球支付白金卡'
-        theme = '世界杯版' if ('世界杯版' in detail or '世界杯版' in title or '世界杯' in title) else ''
-        if card_name:
-            bank_prefix = '农行' if ('农业银行' in detail or '农行' in title or '农行' in bank) else bank.replace('未知公众号', '').replace('银行', '')
-            summary = f'{bank_prefix}{card_name}{theme}首发'.strip()
-            return safe_truncate(summary, 28)
-        return safe_truncate(_strip_marketing_tail(title), 28)
-
-    if cat == '权益变更':
-        # P1-2: 优先使用 raw_title（含原始标题如"关于启用新版《敏感个人信息处理授权书》的通告"）
-        raw_title = clean_xml_text(item.get('raw_title', '')).strip()
-        source = structured.get('变更内容', '') or raw_title or title
-        # 跳过广告/引言段落（说在前头、星标、扫码等）
-        source = _skip_intro_marketing(source)
-        summary = _first_sentence(source)
-        # 如果摘要仍是广告/空，尝试在 text 中找变更关键词后的第一句
-        if not summary or len(summary) < 6 or any(kw in summary for kw in ['说在前头', '星标', '扫码', '可以扫码']):
-            fallback_text = source or raw_title or title
-            # 找「下架」「调整」「变更」「取消」「新增」后的内容
-            for kw in ['下架', '调整', '取消', '变更', '上线', '发布']:
-                pos = fallback_text.find(kw)
-                if pos >= 0:
-                    summary = _first_sentence(fallback_text[pos:])
-                    if summary and len(summary) >= 6:
-                        break
-        action = ''
-        for kw in ['启用新版', '新增', '调整', '修订', '更新', '生效']:
-            if kw in title or kw in summary or kw in raw_title:
-                action = kw
-                break
-        # 优先从 raw_title 提取对象
-        obj = _extract_object_from_title(raw_title or title)
-        if action and obj:
-            if obj.startswith(action):
-                return safe_truncate(obj, 28)
-            return safe_truncate(f'{action}{obj}', 28)
-        if obj:
-            return safe_truncate(obj, 28)
-        return safe_truncate(summary, 28)
-
-    if cat == '活动':
-        cleaned_title = clean_xml_text(title).strip()
-        if cleaned_title and not cleaned_title.startswith('一、'):
-            return safe_truncate(cleaned_title, 28)
-        source = structured.get('活动内容', '') or title
-        return safe_truncate(_first_sentence(source), 28)
-
-    if cat == '公告':
-        return safe_truncate(_first_sentence(structured.get('消息内容', '') or title), 28)
-
-    if cat == '其他':
-        return safe_truncate(_first_sentence(structured.get('详细内容', '') or title), 28)
-
-    return ''
-
-
-def _resolve_highlight_source_name(item: dict) -> str:
-    bank = clean_xml_text(item.get('bank', '')).strip()
-    if bank and bank not in {'未知公众号', '未知', '公众号'}:
-        return bank
-
-    title = clean_xml_text(item.get('title', '')).strip()
-    structured = item.get('structured', {}) or {}
-    detail_text = ' '.join(str(v) for v in structured.values() if v)
-    guessed = extract_bank_name(title, detail_text)
-    if guessed:
-        return guessed
-
-    author = clean_xml_text(item.get('author', '')).strip()
-    if author and author not in {'未知公众号', '未知', '公众号'}:
-        return author
-    return bank or author
-
-
-def _normalize_detail_text(key: str, value: str, item: dict) -> str:
-    text = clean_xml_text(value or '')
-    if key != '详情' or not text:
-        return text
-
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    useful_lines = []
-    inside_core_section = False
-    for line in lines:
-        # 跳过纯图描述（无信用卡信息）
-        if line.startswith('[图片核心内容 - '):
-            continue
-        if '未包含任何信用卡相关信息' in line:
-            continue
-        if '仅显示一个用于申卡的微信二维码' in line:
-            continue
-        # P1-1: 识别新 OCR 结构化摘要格式
-        # 进入「核心信用卡资讯」段后，只保留该段内容
-        if '核心信用卡资讯' in line:
-            inside_core_section = True
-            continue
-        if '补充说明' in line or 'image_description' in line.lower():
-            inside_core_section = False
-            continue
-        if inside_core_section:
-            useful_lines.append(line)
-            continue
-        # 旧格式：- 银行：- 卡种：
-        if any(line.startswith(prefix) for prefix in ['- 银行：', '- 卡种：', '- 卡面级别：', '- 卡面主题：', '- 活动：', '- 合作：']):
-            useful_lines.append(line.lstrip('- ').strip())
-            continue
-        # 新格式：1. 发卡银行：2. 卡种名称：3. 卡片级别：4. 卡面特色：5. 上线状态：
-        if re.match(r'^\d+\.\s*(发卡银行|卡种名称|卡片级别|卡面特色|上线状态|年费信息|权益亮点)', line):
-            # 去掉序号前缀
-            cleaned = re.sub(r'^\d+\.\s*', '', line)
-            useful_lines.append(cleaned)
-            continue
-        # 旧 fallback：首段无噪音文字
-        if not useful_lines and len(line) >= 8 and '二维码' not in line:
-            useful_lines.append(line)
-
-    if useful_lines:
-        return '；'.join(useful_lines[:6])
-    return _normalize_highlight_text(text)
 
 
 setup_docx = setup_docx_cached
@@ -457,20 +254,21 @@ def generate_report(input_path: str, output_path: str,
         hs = (it.get('highlight_summary', '') or '').strip()
         if '以上内容为广告' in hs:
             continue
+        # P10: 跳过纯广告/空内容标记的条目
+        noise_flags = it.get('noise_flags') or []
+        if 'pure_ad_or_empty' in noise_flags:
+            continue
 
         highlight_idx += 1
         # P0-1: 优先消费标准化字段
-        bank = it.get('source_name') or _resolve_highlight_source_name(it)
+        bank = it.get('source_name') or it.get('bank', '')
         summary = (
             it.get('highlight_summary')
             or it.get('display_title')
-            or _build_highlight(it)
             or it.get('title', '')
         )
-        # 对 highlight_summary / display_title 不再二次 safe_truncate
-        # 仅对其他来源做长度保护
-        if summary == it.get('title', ''):
-            summary = safe_truncate(summary, 60)
+        # P16: 统一对 highlight_summary 做长度保护
+        summary = safe_truncate(summary, 80)
         label = clean_xml_text(f'{bank} · {summary}') if bank else clean_xml_text(summary)
         p = doc.add_paragraph(f'{highlight_idx}. {label}')
         p.paragraph_format.space_after = Pt(2)
@@ -509,7 +307,7 @@ def generate_report(input_path: str, output_path: str,
             title_text = item.get('display_title') or item.get('title', '')
             url = item.get('url', '')
             raw_text = item.get('raw_text', '')
-            structured = item.get('structured', {})
+            structured = item.get('structured_clean') or item.get('structured', {})
             images = item.get('images', [])
 
             # ── 条目标题 ──
@@ -535,9 +333,6 @@ def generate_report(input_path: str, output_path: str,
             if visible:
                 for key, label_name in visible:
                     val = structured.get(key, '')
-                    if key == '来源' and str(val).strip() in {'未知公众号', '未知', '公众号'}:
-                        val = _resolve_highlight_source_name(item) or val
-                    val = _normalize_detail_text(key, val, item)
                     p = doc.add_paragraph()
                     p.paragraph_format.space_after = Pt(2)
                     p.paragraph_format.space_before = Pt(1)

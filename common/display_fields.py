@@ -8,13 +8,43 @@ Usage:
     result = generate_display_fields(bank="招商银行", category="新卡", ...)
 """
 
+import re
+
+
+def _strip_marketing_tail(text: str) -> str:
+    """去掉营销 CTA 尾巴和尾部标签（内联版，避免循环导入）。"""
+    if not text:
+        return ""
+    text = re.sub(r'珍藏周边礼等你领.*$', '', text).strip()
+    text = re.sub(r'【[^】]+】$', '', text).strip()
+    return text
+
+
+def _safe_truncate(text: str, max_chars: int = 500) -> str:
+    """按句子边界截断文本（内联版，避免循环导入）。"""
+    if not text or len(text) <= max_chars:
+        return text
+    candidates = []
+    for sep in ['。', '！', '？', '\n']:
+        idx = text.rfind(sep, 0, max_chars)
+        if idx > max_chars * 0.5:
+            candidates.append((idx + 1, sep))
+    if not candidates:
+        idx = text.rfind(' ', 0, max_chars)
+        return text[:idx] + '…' if idx > 10 else text[:max_chars] + '…'
+    best = max(candidates, key=lambda x: x[0])
+    return text[:best[0]]
+
+
 # ── Category action keywords (title is "good enough" if it contains these) ─
 
 _ACTION_KEYWORDS: dict[str, list[str]] = {
     "新卡":     ["发布", "发行", "推出", "首发", "上市", "全新", "新卡"],
     "权益变更": ["调整", "变更", "升级", "取消", "优化", "缩水", "新规", "权益", "修改",
                  "下架", "停用", "上线", "启用"],
-    "活动":     ["活动", "优惠", "返现", "满减", "立减", "福利", "折扣", "积分", "送", "消费奖励"],
+    "活动":     ["活动", "优惠", "返现", "满减", "立减", "福利", "折扣", "积分", "送",
+                 "消费奖励", "免年费", "达标", "新户", "里程", "开卡礼", "刷卡金",
+                 "兑换", "抽奖"],
     "公告":     [],  # 公告类标题保持原样
 }
 
@@ -37,7 +67,7 @@ def _generate_title(
     if category == "活动":
         activity = (structured.get("活动内容") or "").strip()
         if activity:
-            return f"{bank}活动：{activity[:30]}"
+            return f"{bank}活动：{_safe_truncate(activity, 30)}"
         return f"{bank}推出优惠活动"
 
     if category == "权益变更":
@@ -53,43 +83,110 @@ def _generate_title(
     return fallback_title or f"{bank}{category}"
 
 
+def _is_date_or_number_fragment(text: str) -> bool:
+    """判断文本是否只是日期/数字片段（不适合作为摘要）。"""
+    if not text:
+        return True
+    # 纯日期："7月31日"、"2026年6月"、"6月1日至6月30日"
+    if re.match(r'^[\d\-/.~至到年月日号月日]+$', text.strip()):
+        return True
+    # 纯数字+单位："10点"、"100元"
+    if re.match(r'^[\d.]+\s*[元点%]$', text.strip()):
+        return True
+    return False
+
+
 def _build_highlight_summary(
     category: str,
     structured: dict,
     raw_text: str = "",
     raw_title: str = "",
     bank: str = "",
+    structured_clean: dict | None = None,
 ) -> str:
-    """从 structured 中提取主要的内容摘要。"""
-    structured = structured or {}
+    """从 structured 中提取主要的内容摘要。
+
+    优先使用 structured_clean（已清洗版本），回退到 structured。
+    所有类别摘要末尾统一调用 _strip_marketing_tail() 去营销噪音。
+    """
+    sc = structured_clean or structured or {}
 
     if category == "新卡":
-        card_name = (structured.get("卡种") or "").strip()
-        if card_name:
-            return f"{bank}发布{card_name}" if bank else card_name
-        return (structured.get("卡亮点") or raw_title or structured.get("详情", "")[:100])[:100]
+        card_name = (sc.get("卡种") or structured.get("卡种") or "").strip()
+        highlight = (sc.get("卡亮点") or structured.get("卡亮点") or "").strip()
+        if highlight:
+            summary = f"{card_name}：{highlight[:80]}" if card_name else highlight[:100]
+        elif card_name:
+            summary = f"{bank}发布{card_name}" if bank else card_name
+        else:
+            summary = (raw_title or sc.get("详情", ""))[:100]
     elif category == "活动":
-        activity = (structured.get("活动内容") or raw_title or "")[:100]
-        return activity
+        activity = (sc.get("活动内容") or structured.get("活动内容") or "").strip()
+        if activity and activity != raw_title:
+            extracted = _extract_first_sentence(activity)
+            # 提取结果只是日期/数字片段 → 用 raw_title 兜底
+            if _is_date_or_number_fragment(extracted) and raw_title:
+                summary = raw_title[:100]
+            else:
+                summary = extracted[:100]
+        else:
+            summary = raw_title[:100] if raw_title else ""
     elif category == "权益变更":
-        # 优先 raw_title，其次从 变更内容 提取第一句（跳过日期/时间）
-        if raw_title:
-            return raw_title[:100]
-        change = (structured.get("变更内容") or "")
+        change = (sc.get("变更内容") or structured.get("变更内容") or "").strip()
         if change:
-            # 取第一句（句号前）
-            first_sentence = change.split('。')[0] if '。' in change else change
-            # 跳过「活动时间」类描述
-            for marker in ['活动时间', '活动内容', '活动对象']:
-                pos = first_sentence.find(marker)
-                if pos > 0:
-                    first_sentence = first_sentence[:pos].strip()
-            return first_sentence[:100]
-        return ""
+            extracted = _extract_first_sentence(change)
+            # 提取结果只是日期/数字片段 → 用 raw_title 兜底
+            if _is_date_or_number_fragment(extracted) and raw_title:
+                summary = raw_title[:100]
+            else:
+                summary = extracted[:100]
+        else:
+            summary = raw_title[:100] if raw_title else ""
     elif category == "公告":
-        return (structured.get("消息内容") or "")[:200]
+        summary = (sc.get("消息内容") or structured.get("消息内容") or "")[:200]
     else:
-        return (raw_text or raw_title or "")[:200]
+        summary = (raw_text or raw_title or "")[:200]
+
+    # 统一去营销尾巴
+    summary = _strip_marketing_tail(summary)
+    return summary
+
+
+def _extract_first_sentence(text: str) -> str:
+    """从文本中提取第一句有意义的话，跳过时间/活动类标记。
+
+    截断点：句号/分号/中文编号段落（一、二、...）/（一）（二）...
+    """
+    if not text:
+        return ""
+    # 在句号/分号之前，先按中文编号段落截断（"一、""二、" 等）
+    # 这些标记在正式文档中表示新段落，应作为摘要边界
+    first_sentence = re.split(r'[。；]', text)[0]
+    m = re.search(r'(?:^|[：:\s])[一二三四五六七八九十]+、', first_sentence)
+    if m:
+        first_sentence = first_sentence[:m.start()].strip()
+    # 跳过「活动时间」类前缀（marker + 其值部分），循环去除连续标记
+    _markers = ['活动时间', '活动内容', '活动对象', '报名时间', '领奖用奖时间',
+                '消费达标时间', '活动规则', '活动详情', '活动细则', '活动期限',
+                '优惠内容', '权益内容', '调整内容', '原规则', '新规则']
+    for _ in range(5):  # 最多去 5 轮
+        matched = False
+        for marker in _markers:
+            if first_sentence.startswith(marker):
+                rest = first_sentence[len(marker):]
+                rest = re.sub(r'^[：:\s]+', '', rest)
+                rest = re.sub(r'^[\d\-/.~至到年月日号]*[年月日号]', '', rest)
+                rest = re.sub(r'^\s*\d+[：:点时分]\d*\s*', '', rest)
+                rest = re.sub(r'^起至\s*', '', rest)
+                if rest.strip():
+                    first_sentence = rest.strip()
+                    matched = True
+                    break
+        if not matched:
+            break
+    # 去掉开头的"尊敬的客户："等称呼
+    first_sentence = re.sub(r'^(尊敬的客户[：:]?|您好[！!]?|感谢您[^，,]*[，,]?)\s*', '', first_sentence)
+    return first_sentence.strip()
 
 
 def generate_display_fields(
@@ -151,7 +248,10 @@ def generate_display_fields(
                     title = raw_title
 
     # 摘要
-    highlight_summary = _build_highlight_summary(category, structured or {}, raw_text, raw_title, bank=bank)
+    highlight_summary = _build_highlight_summary(
+        category, structured or {}, raw_text, raw_title, bank=bank,
+        structured_clean=structured_clean,
+    )
 
     # 默认 evidence
     if not evidence:

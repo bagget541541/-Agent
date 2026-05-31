@@ -15,6 +15,7 @@
 """
 
 import re
+from typing import Optional
 
 from common.schema import CreditCardItem, CreditCardBatch
 from common.classifier import classify_item
@@ -69,6 +70,124 @@ def _safe_truncate(text: str, max_chars: int = 500) -> str:
     return text[:best[0]]
 
 
+def _normalize_highlight_text(text: str) -> str:
+    """清洗高亮/详情文本：去称呼、章节标题、噪音标记、多余空白。
+
+    从 generate_report.py 迁移，作为 structured_clean 的通用清洗步骤。
+    """
+    if not text:
+        return ""
+    text = re.sub(r"\[图片核心内容\s*-\s*[^\]]+\]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    # 去称呼前缀
+    for prefix in [
+        "尊敬的客户：", "尊敬的持卡人：", "附件：", "点击可查阅：",
+        "一、活动时间", "二、活动对象", "三、活动内容", "四、活动细则",
+    ]:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    # 去"关于"前缀
+    text = re.sub(r"^(关于)?启用新版", "启用新版", text)
+    text = re.sub(r"^(关于)?新增", "新增", text)
+    text = text.replace("特此公告。", "").strip()
+    text = re.sub(r"\s+", " ", text).strip(" ：:;；，,。")
+    return text
+
+
+def _normalize_detail_text(text: str) -> str:
+    """深度清洗「详情」字段：识别 OCR 结构化格式、过滤噪音行、提取有用信息。
+
+    从 generate_report.py 迁移，仅处理 key='详情' 的值。
+    """
+    if not text:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    useful_lines = []
+    inside_core_section = False
+    for line in lines:
+        # 噪音行直接跳过
+        if line.startswith('[图片核心内容 - '):
+            continue
+        if '未包含任何信用卡相关信息' in line:
+            continue
+        if '仅显示一个用于申卡的微信二维码' in line:
+            continue
+        # 识别"核心信用卡资讯"结构化段落
+        if '核心信用卡资讯' in line:
+            inside_core_section = True
+            continue
+        if '补充说明' in line or 'image_description' in line.lower():
+            inside_core_section = False
+            continue
+        if inside_core_section:
+            useful_lines.append(line)
+            continue
+        # 识别 "- 银行：/卡种：..." 前缀格式
+        if any(line.startswith(p) for p in
+               ['- 银行：', '- 卡种：', '- 卡面级别：', '- 卡面主题：',
+                '- 活动：', '- 合作：']):
+            useful_lines.append(line.lstrip('- ').strip())
+            continue
+        # 识别编号前缀格式 "1. 发卡银行：..."
+        if re.match(r'^\d+\.\s*(发卡银行|卡种名称|卡片级别|卡面特色|上线状态|年费信息|权益亮点)', line):
+            cleaned = re.sub(r'^\d+\.\s*', '', line)
+            useful_lines.append(cleaned)
+            continue
+        # 首条长文本作为兜底
+        if not useful_lines and len(line) >= 8 and '二维码' not in line:
+            useful_lines.append(line)
+    if useful_lines:
+        return '；'.join(useful_lines[:6])
+    return _normalize_highlight_text(text)
+
+
+def _strip_marketing_tail(text: str) -> str:
+    """去掉营销 CTA 尾巴和尾部标签。
+
+    从 generate_report.py 迁移。
+    """
+    if not text:
+        return ""
+    text = re.sub(r'珍藏周边礼等你领.*$', '', text).strip()
+    text = re.sub(r'【[^】]+】$', '', text).strip()
+    return text
+
+
+# 营销后缀/修饰词（用于清洗卡种名）
+_CARD_NAME_NOISE_SUFFIXES = re.compile(
+    r'(重磅上市|正式发行|燃情首发|震撼来袭|火热上线|盛大发布|即将上线|全新上线|新卡上线|！|!)+$'
+)
+# 中间噪音短语（如 "交行新卡上线 泡泡玛特" → 去掉 "新卡上线 "）
+_CARD_NAME_NOISE_MIDDLE = re.compile(r'\s*(新卡上线|重磅上市|正式发行|燃情首发)\s*')
+_CARD_NAME_NOISE_TAIL_TAGS = re.compile(r'【[^】]+】\s*$|\|\s*[^|]+$')
+_CARD_NAME_NOISE_PREFIXES = re.compile(r'^(狂欢|重磅|全新|盛大|火热|震撼)\s*')
+_CARD_NAME_STRIP_CHARS = " ，,。.、；;！!"
+
+
+def _clean_card_name(title: str) -> str:
+    """从原标题中清洗出核心卡种名，去掉营销噪音。
+
+    Examples:
+        "招商银行发布全新白金信用卡，正式发行！" → "白金信用卡"
+        "农行Visa全球支付白金卡（世界杯版）【限时】" → "农行Visa全球支付白金卡（世界杯版）"
+        "重磅！华夏南航联名信用卡发布" → "华夏南航联名信用卡"
+    """
+    if not title:
+        return "" if title is not None else None
+    name = title.strip()
+    # 去营销后缀
+    name = _CARD_NAME_NOISE_SUFFIXES.sub('', name)
+    # 去中间噪音短语
+    name = _CARD_NAME_NOISE_MIDDLE.sub(' ', name).strip()
+    # 去尾部标签 【xxx】| xxx
+    name = _CARD_NAME_NOISE_TAIL_TAGS.sub('', name)
+    # 去开头修饰
+    name = _CARD_NAME_NOISE_PREFIXES.sub('', name)
+    # 去尾部标点
+    name = name.strip(_CARD_NAME_STRIP_CHARS)
+    return name or title
+
+
 def _build_structured_for_category(
     category: str,
     title: str,
@@ -87,7 +206,7 @@ def _build_structured_for_category(
     structured: dict[str, str] = {}
 
     if category == "新卡":
-        structured["卡种"] = title
+        structured["卡种"] = _clean_card_name(title)
         structured["卡亮点"] = ""
         structured["适用人群"] = "信用卡持卡人"
         structured["来源"] = author or url
@@ -206,6 +325,86 @@ def _build_image_structured(title: str, ocr_text: str, category: str) -> dict:
     return structured
 
 
+# ── Confidence scoring ────────────────────────────────────────────────────
+
+# 各分类的期望 structured 字段（与 _build_structured_for_category 保持一致）
+_EXPECTED_FIELDS = {
+    "新卡": ["卡种", "卡亮点", "适用人群", "来源", "详情"],
+    "活动": ["活动内容", "活动时间", "适用人群"],
+    "权益变更": ["消息时间", "影响范围", "变更内容", "变更分析"],
+    "公告": ["消息内容", "点评"],
+    "其他": ["详细内容"],
+}
+
+
+def _compute_confidence(
+    category_candidates: list,
+    bank_confidence: float,
+    title_source: str,
+    raw_title: str,
+    structured: dict,
+    category: str,
+) -> dict:
+    """Compute continuous confidence scores from available signals.
+
+    Returns dict with keys: overall, category, bank, title, structured.
+    All values are in [0.0, 1.0].
+    """
+    # --- category: 使用 classifier 真实顶分，模糊分类时扣减 ---
+    if category_candidates and len(category_candidates) >= 1:
+        top_score = category_candidates[0][1]
+        if len(category_candidates) >= 2:
+            gap = top_score - category_candidates[1][1]
+            discount = max(0.0, (0.15 - gap)) * 0.5
+            category_score = max(0.0, min(1.0, top_score - discount))
+        else:
+            category_score = top_score
+    else:
+        category_score = 0.0
+
+    # --- bank: 直接使用 entity_resolver 的 bank_confidence ---
+    bank_score = bank_confidence
+
+    # --- title: 原始标题基础分 + 长度奖励 ---
+    if title_source == "generated":
+        title_score = 0.4
+    else:
+        title_score = 0.7
+    if raw_title and len(raw_title) >= 10:
+        title_score = min(1.0, title_score + 0.1)
+    if raw_title and len(raw_title) >= 20:
+        title_score = min(1.0, title_score + 0.1)
+
+    # --- structured: 已填充字段数 / 该分类期望字段数 ---
+    expected = _EXPECTED_FIELDS.get(category, _EXPECTED_FIELDS["其他"])
+    if structured and expected:
+        filled = sum(1 for f in expected if structured.get(f))
+        structured_score = filled / len(expected)
+    elif structured:
+        total = len(structured)
+        filled = sum(1 for v in structured.values() if v)
+        structured_score = filled / total if total > 0 else 0.0
+    else:
+        structured_score = 0.0
+
+    # --- overall: 加权平均 ---
+    overall = (
+        0.35 * category_score
+        + 0.25 * bank_score
+        + 0.20 * structured_score
+        + 0.20 * title_score
+    )
+    overall = round(max(0.0, min(1.0, overall)), 3)
+
+    return {
+        "overall": round(overall, 3),
+        "category": round(category_score, 3),
+        "bank": round(bank_score, 3),
+        "title": round(title_score, 3),
+        "structured": round(structured_score, 3),
+    }
+
+
 # ── Main normalize functions ──────────────────────────────────────────────
 
 def normalize_item(
@@ -289,6 +488,12 @@ def normalize_item(
         category_candidates = classify_result["category_candidates"]
         classify_evidence = classify_result["evidence"]
 
+    # ── 2.5 纯广告/空内容检测 ──
+    _raw_text_stripped = (raw_text or "").strip()
+    if _raw_text_stripped in ("（以上内容为广告）", "以上内容为广告", ""):
+        if category not in ("其他",):
+            noise_flags.append("pure_ad_or_empty")
+
     # ── 3. 来源识别 ──
     # bank 参数优先，其次 raw_item 内 bank 字段
     actual_bank = bank or raw_item.get("bank", "")
@@ -320,14 +525,23 @@ def normalize_item(
     # ── 4.5 生成 structured_clean（去营销引言/噪音版本） ──
     structured_clean: dict[str, str] = {}
     for k, v in structured.items():
-        if v:
-            cleaned = _trim_marketing_intro(v)
-            # 去掉 "[图片核心内容 - xxx]" 等纯噪音标记
-            cleaned = re.sub(r'\[图片核心内容\s*-\s*[^\]]*\]', '', cleaned).strip()
-            # 去掉 "（以上内容为广告）" 尾巴
-            cleaned = re.sub(r'（以上内容为广告）', '', cleaned).strip()
-            if cleaned:
-                structured_clean[k] = cleaned
+        if not v:
+            continue
+        cleaned = _trim_marketing_intro(v)
+        # 去掉 "[图片核心内容 - xxx]" 等纯噪音标记
+        cleaned = re.sub(r'\[图片核心内容\s*-\s*[^\]]*\]', '', cleaned).strip()
+        # 去掉 "（以上内容为广告）" 尾巴
+        cleaned = re.sub(r'（以上内容为广告）', '', cleaned).strip()
+        # 按字段类型做深度清洗
+        if k == '详情':
+            cleaned = _normalize_detail_text(cleaned)
+        elif k in ('变更内容', '活动内容', '消息内容', '详细内容'):
+            cleaned = _normalize_highlight_text(cleaned)
+        if cleaned:
+            structured_clean[k] = cleaned
+    # 写入已解析的来源（替代 Word 层的 未知公众号 fallback）
+    if entity_result["source_name"] and entity_result["source_name"] != "未知":
+        structured_clean['来源'] = entity_result["source_name"]
 
     # ── 5. 展示字段 ──
     display_result = generate_display_fields(
@@ -340,13 +554,14 @@ def normalize_item(
     )
 
     # ── 6. 可信度 ──
-    confidence = {
-        "overall": 0.7,
-        "category": 0.7 if category_candidates else 0.5,
-        "bank": 0.9 if entity_result["bank"] != "未知" else 0.0,
-        "title": 0.6 if display_result["title_source"] == "generated" else 0.9,
-        "structured": 0.7 if structured else 0.3,
-    }
+    confidence = _compute_confidence(
+        category_candidates=category_candidates,
+        bank_confidence=entity_result.get("bank_confidence", 0.0),
+        title_source=display_result["title_source"],
+        raw_title=title,
+        structured=structured,
+        category=category,
+    )
 
     evidence = {}
     if entity_result.get("evidence"):
