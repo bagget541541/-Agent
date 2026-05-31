@@ -90,7 +90,7 @@ class PipelineResult:
                 traceback_str=tb,
             )
             self.errors.append(err)
-            print(f"  [{step_name}] ⚠ Failed: {e}", file=sys.stderr)
+            print(f"  [{step_name}] [FAIL] {e}", file=sys.stderr)
             return default
 
     def print_summary(self):
@@ -106,10 +106,10 @@ class PipelineResult:
         if fail:
             print(f"  失败: {fail} 步")
             for err in self.errors:
-                print(f"    ⚠ {err.short_str()}")
+                print(f"    [FAIL] {err.short_str()}")
             print(f"  （管道继续运行，失败步骤已使用默认值降级）")
         else:
-            print(f"  全部成功 ✓")
+            print(f"  全部成功 [v]")
         print("=" * 60)
 
     def has_errors(self) -> bool:
@@ -140,9 +140,9 @@ def log_info(step: str, message: str):
 
 def log_warn(step: str, message: str):
     """统一警告日志"""
-    print(f"  [{step}] ⚠ {message}", file=sys.stderr)
+    print(f"  [{step}] [WARN] {message}", file=sys.stderr)
 
 
 def log_error(step: str, message: str):
     """统一错误日志"""
-    print(f"  [{step}] ✗ {message}", file=sys.stderr)
+    print(f"  [{step}] [ERR] {message}", file=sys.stderr)

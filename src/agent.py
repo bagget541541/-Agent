@@ -828,8 +828,9 @@ def step4_generate_md_report(batch: CreditCardBatch, output_dir: str = None) -> 
                                 rel_path = os.path.relpath(img, str(output_dir))
                             except Exception:
                                 rel_path = img
-                        alt_text = f"{title} - {os.path.basename(rel_path)}"
-                        lines.append(f"![{alt_text}]({rel_path})")
+                        alt_text = f"{title} - {os.path.basename(rel_path)}".replace("\n", " ").replace("\r", "")
+                        md_path = rel_path.replace("\\", "/")
+                        lines.append(f"![{alt_text}]({md_path})")
                         all_images.append((cat, alt_text, rel_path))
                     lines.append("")
 
@@ -841,7 +842,9 @@ def step4_generate_md_report(batch: CreditCardBatch, output_dir: str = None) -> 
             lines.append("## 🖼️ 图片索引")
             lines.append("")
             for idx, (cat, alt, path) in enumerate(all_images, 1):
-                lines.append(f"{idx}. [{alt}]({path}) — 分类：{cat}")
+                alt_clean = alt.replace("\n", " ").replace("\r", "")
+                path_clean = path.replace("\\", "/")
+                lines.append(f"{idx}. [{alt_clean}]({path_clean}) — 分类：{cat}")
             lines.append("")
 
         # Write to file

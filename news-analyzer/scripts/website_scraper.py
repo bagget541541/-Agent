@@ -1422,7 +1422,7 @@ def scrape_bank(
         since = datetime.now() - timedelta(days=days)
 
     print(f"\n{'─' * 50}")
-    print(f"🏦 {bank.name} ({bank.short_name})")
+    print(f"[Bank] {bank.name} ({bank.short_name})")
     print(f"   列表页: {bank.list_url}")
     print(f"   时间范围: {since.strftime('%Y-%m-%d')} ~ {until.strftime('%Y-%m-%d') if until else '至今'}")
     print(f"{'─' * 50}")
