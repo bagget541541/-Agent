@@ -127,6 +127,71 @@ def _safe_write_json(filepath: Path, data: dict, *, ensure_ascii: bool = False, 
             pass
 
 
+def _filter_meaningful_images(image_paths: list[str]) -> list[str]:
+    """过滤无意义装饰图片，保留有实质内容的图片。
+
+    过滤规则（满足任一即跳过）：
+    1. 文件 < 5KB（图标/占位图）
+    2. 宽高都 < 50px（小图标）
+    3. 任一方 < 30px（极窄装饰条/分割线）
+    4. 像素标准差 < 8（纯色/简单渐变，无文字内容）
+
+    Args:
+        image_paths: 图片路径列表（本地路径或 HTTP URL）
+
+    Returns:
+        过滤后的图片列表，至少保留一张
+    """
+    if not image_paths:
+        return []
+
+    # 检查 PIL 是否可用
+    try:
+        from PIL import Image, ImageStat
+    except ImportError:
+        return image_paths  # 没有 PIL 就全部保留
+
+    meaningful = []
+    for img_path in image_paths:
+        try:
+            # 远程 URL 暂不处理（后续下载时再过滤）
+            if img_path.startswith("http://") or img_path.startswith("https://"):
+                meaningful.append(img_path)
+                continue
+
+            if not os.path.exists(img_path):
+                continue
+
+            # 1. 文件大小过滤
+            if os.path.getsize(img_path) < 5 * 1024:
+                continue
+
+            # 2-3. 尺寸过滤
+            img = Image.open(img_path)
+            w, h = img.size
+            if w < 30 or h < 30:
+                continue
+            if w < 50 and h < 50:
+                continue
+
+            # 4. 像素方差过滤（转为灰度，缩到 64x64 加速）
+            gray = img.convert("L")
+            gray.thumbnail((64, 64))
+            stat = ImageStat.Stat(gray)
+            std = stat.stddev[0]  # 灰度图只有一个通道
+
+            if std < 8:
+                continue  # 低方差 = 几乎纯色 = 装饰图
+
+            meaningful.append(img_path)
+        except Exception:
+            # 无法处理的图片保留
+            meaningful.append(img_path)
+
+    # 至少保留一张图，避免文章完全无图
+    return meaningful if meaningful else (image_paths[:1] if image_paths else [])
+
+
 def _normalize_wechat_article(raw: dict, url: str = "") -> dict:
     """把缓存/抓取结果统一成 step1 输出格式。"""
     article_url = raw.get("url") or url
@@ -149,6 +214,8 @@ def _normalize_wechat_article(raw: dict, url: str = "") -> dict:
     # 无论来源如何，每个条目最多保留 3 张图片（前 3 张通常是标题卡+关键内容）
     if len(images) > 3:
         images = images[:3]
+    # 过滤无意义装饰图片（仅对已下载的本地文件生效）
+    images = _filter_meaningful_images(images)
     account_name = raw.get("account_name") or raw.get("author") or raw.get("biz_name") or "未知公众号"
 
     # 保留 content_blocks（用于多主题拆分）
@@ -774,6 +841,8 @@ def step4_generate_md_report(batch: CreditCardBatch, output_dir: str = None) -> 
                 structured = raw.get("structured", {}) or {}
                 raw_text = raw.get("raw_text", "")
                 images = raw.get("images", []) or []
+                # 过滤无意义装饰图片（全量兜底过滤，影响 WeChat + Bank）
+                images = _filter_meaningful_images(images)
 
                 lines.append(f"### {title}")
                 lines.append("")

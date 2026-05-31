@@ -19,10 +19,10 @@ echo Select mode:
 echo.
 echo   [A] Full pipeline - WeChat URLs + Bank scraping -> Generate report
 echo   [B] Merge mode - Existing Word docs -> Merge + Suggestions -> Output
-echo   [C] Quick mode - Step 1-4 only -> Markdown with images
+echo   [C] Quick mode - Step 1-4 only -> Markdown with images (skip Step5-6)
 echo   [Q] Exit
 echo.
-set /p choice=Enter choice (A/B/Q, default A):
+set /p choice=Enter choice (A/B/C/Q, default A):
 if "%choice%"=="" set choice=A
 
 if /i "%choice%"=="A" goto :mode_a
