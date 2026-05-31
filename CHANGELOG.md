@@ -1,6 +1,41 @@
 # 修订记录
 
-## v0.13.0 — 2026-06-07
+## v0.14.0 — 2026-06-08
+
+### P3 — 目录结构整理
+
+#### 核心源码迁移
+
+- `src/` 包创建，核心模块迁移（`agent.py`, `pipeline.py`, `rag_query.py`），路径经修正
+- 根级 stub 委派（`_agent.py`, `rag_query.py`, `run_pipeline.py`），所有 `.bat` / 命令行入口无感使用
+- 调试脚本 → `scripts/debug/`（`check_dups`, `check_item`, `check_item2`, `e2e`）
+- RAG 知识库维护 → `scripts/rag/`（`kb_add_article`）
+- 工具脚本独立（`scripts/cleanup_images.py`）
+- 文档 → `docs/`（9 个 `.md` 文件整理归档）
+- 陈旧文件清理（`tests/test_output*.docx`）+ `.gitignore` 已有屏蔽规则
+
+#### P1 — 迁移 Word 层内容修复逻辑到 normalizer
+
+- `normalizer.py` 新增 `_trim_marketing_intro()` — 自动过滤公众号营销引言段
+- `normalizer.py` 新增 `_safe_truncate()` — 按句号/感叹号/问号边界截断，不在词/句中切断
+- `normalizer.py` 新增 `structured_clean` 填充逻辑，对 structured 各字段去营销/去噪音
+- `word-merger/generate_report.py` 删除本地重复的截断/过滤逻辑，全部委派 normalizer
+- `display_fields.py` 参数化调用，避免 self 传递，消除循环引用
+- 删除 3 处本地分类函数，全部统一到 `common/classifier`
+
+#### P2 — 优化 confidence 打分区分度
+
+- 多维度打分因子重构（关键词匹配 + 实体数 + 来源权威性 + 时效性）
+- 分数分布更平滑，审核队列实际可用
+- `common/review.py` 同步适配新的 confidence 范围
+
+#### 测试
+
+- 新增 6 个测试文件（classifier / confidence / display_fields / entity_resolver / llm_review / normalizer）
+- 全量 188 passed，无回归
+
+---
+
 
 ### 验收修复 — 跨模块标准化收口
 

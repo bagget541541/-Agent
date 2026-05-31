@@ -83,7 +83,7 @@ python _agent.py --archive-only
         │   │
         │   ├── Step 1: 抓取微信文章 (wechat-rss-monitor)
         │   ├── Step 2: 抓取银行公告 (news-analyzer)
-        │   ├── Step 3: 分类合并 (common/schema)
+        │   ├── Step 3: 分类合并 (common/ → src/ 桥接)
         │   ├── Step 4: 生成 Word 周报 (word-merger)
         │   ├── Step 5: 持卡分析 (card-holding-suggestion)
         │   ├── Step 6: 追加持卡建议到周报
@@ -96,6 +96,25 @@ python _agent.py --archive-only
             ├── 提取图片并保留
             ├── LLM 整体分析生成持卡建议
             └── 输出整合版 Word 文档
+```
+
+### 目录结构
+
+```
+_agent.py               # 根级 stub → src/agent.py（向后兼容）
+rag_query.py            # 根级 stub → src/rag_query.py
+run_pipeline.py         # 根级 stub → src/pipeline.py
+src/                    # 核心源码包
+  agent.py              #   Agent 全流程编排
+  pipeline.py           #   管线调度
+  rag_query.py          #   RAG 知识库问答
+common/                 # 公共层：数据契约、分类、识别、标准化
+scripts/                # 辅助脚本
+  debug/                #   调试/调试工具
+  rag/                  #   知识库维护
+  cleanup_images.py     #   图片垃圾清理
+docs/                   # 架构文档
+tests/                  # 全量测试（188 用例）
 ```
 
 ---
@@ -121,6 +140,14 @@ python _agent.py --archive-only
 - **`config.py`** — 统一路径配置，禁止硬编码
 - **`utils.py`** — 工具函数（银行名识别、时间解析等）
 - **`archive.py`** — 知识库归档机制
+- **`classifier.py`** — 三层自动分类器（强规则 + 弱规则打分 + 低置信度降级）
+- **`normalizer.py`** — 统一数据清洗入口（`normalize_item`：分类 → 识别 → 结构化 → 展示字段 → 审核标记）
+- **`entity_resolver.py`** — 来源/银行自动识别（17 银行 + 15 公众号映射链）
+- **`display_fields.py`** — 展示字段生成器（标题策略 + 摘要策略，支持 `title_source` 审计）
+- **`review.py`** — 审核队列生成（`build_review_queue` → `data/review/review_queue.md`）
+- **`article_envelope.py`** — 文章信封构建器（微信 content_blocks → 多主题检测）
+- **`topic_splitter.py`** — 主题拆分引擎（6 信号检测 + 置信度打分 + 切点分割 + 过拆修正）
+- **`llm_review.py`** — LLM 辅助审核/复审
 
 ---
 
@@ -462,6 +489,12 @@ SCORE_RULES = {
 - [x] 结构化内容清洁：_trim_marketing_intro / _safe_truncate / structured_clean
 - [x] display_fields 重构：参数化调用替代 self 传递
 
+### M9 — 目录结构整理 + Confidence 优化 ✅
+- [x] P1: Word 层内容修复逻辑迁移到 normalizer（_trim_marketing_intro / _safe_truncate / structured_clean）
+- [x] P2: confidence 打分区分度优化（多维因子：关键词 + 实体数 + 来源权威 + 时效性）
+- [x] P3: 目录结构整理（src/ 包 + 根级 stub + scripts/debug/ + scripts/rag/ + docs/ + 测试用例）
+- [x] 全量 188 passed，无回归
+
 ---
 
 ## 修订记录
@@ -470,6 +503,7 @@ SCORE_RULES = {
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
+| v0.14 | 2026-06-08 | P3 目录结构整理（src/ 包 + 根级 stub + scripts/ + docs/）、P1 Word 修复逻辑迁移到 normalizer、P2 confidence 打分区分度优化、188 测试全通过 |
 | v0.13 | 2026-06-07 | 验收修复：来源字段净化、分类逻辑统一（删除 3 处本地分类函数）、结构内容清洁（_trim_marketing_intro / _safe_truncate / structured_clean）、display_fields 参数化 |
 | v0.12 | 2026-06-06 | 多主题公众号文章拆分：文章信封、主题拆分引擎（6 信号检测 + 切点分割 + 过拆修正 + 单主题回退）、step3_merge 集成、Schema 扩 4 字段、27 测试 + 全量 165 passed |
 | v0.11 | 2026-06-05 | 三批重构：Schema 扩 16 字段、统一 Normalizer/Classifier/EntityResolver/Bank 配置 DOM 级清洗、微信 content_blocks、审核队列、138 测试全通过 |
