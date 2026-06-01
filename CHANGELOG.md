@@ -1,5 +1,84 @@
 # 修订记录
 
+## v0.17.0 — 2026-06-13
+
+### 修复 5 + 优化 1 + 经验沉淀 → TOOLS.md
+
+#### Fix 1: news-analyzer generate_docx.py 重写 — 图片嵌入 + LLM 点评 + 中文字体
+- 完全重写 `news-analyzer/scripts/generate_docx.py`，支持 `images` 字段嵌入图片、LLM `comment` 点评段插入、中文字体 eastAsia 双设
+- 废弃旧版纯文本输出方案，与 word-merger 的 generate_report.py 对齐
+
+#### Fix 2: requirements.txt — 取消 Pillow 注释
+- Pillow 依赖取消注释，确保 `from PIL import Image` 在图片过滤脚本中可用
+
+#### Fix 3: eastAsia 中文字体双设修复（4 个文件）
+- `wechat-article-extractor/scripts/export_document.py` — 3 处添加 `run.font.element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')`
+- `word-merger/scripts/generate_report.py` — run.font.name 与 run._element 双设
+- `word-merger/scripts/merge_docs.py` — 添加 eastAsia 字体
+
+#### Fix 4: ensure_dir 导入修复
+- `common/utils.py` — `ensure_dir` 改为从 `common.images` 导入并保留别名，确保 utils re-export 兼容性
+
+#### Fix 5: word-merger generate_merged_docx.py — 新建独立 CLI 入口
+- `word-merger/scripts/generate_merged_docx.py` 新建文件，支持 `--input` `--output` 参数，复用 `generate_report.py` 核心逻辑
+- 解决旧 `word-merger` skill 调用时缺少独立入口的问题
+
+#### Bonus: llm_review.py 银行列表去重
+- `common/llm_review.py` — BANKS 列表去重（交行、浦发各出现两次），修复 LLM 审核输出中对同一银行给出重复分析
+
+#### Optimization: src/rag_query.py 路径配置统一
+- `os.path.dirname(__file__)` + `os.path.join` → `from common.config import DATA_DIR`，与全项目路径约定一致
+
+#### 经验教训（已追加到 TOOLS.md）
+- **eastAsia 双设**：python-docx 中文字体仅设 `run.font.name` 无效，必须额外设底层 XML `w:eastAsia`
+- **Pillow 不可注释**：注释掉 `requirements.txt` 中 Pillow 会让 `from PIL import Image` 抛出 ImportError
+- **路径统一**：新模块路径优先从 `common.config` 导入，不应本地 re-compute
+- **常量去重**：硬编码常量列表应检查重复项，避免重复输出低级别 bug
+
+### 测试
+- 全量 420 passed，无回归
+
+---
+
+## v0.16.0 — 2026-06-12
+
+### LLM 模块统一：common/llm_client.py（新建 400 行）
+
+统一 3 处分散的 LLM 调用代码为集中维护：
+
+| 旧位置 | 代码量 | 新入口 | 代理行数 |
+|--------|--------|--------|----------|
+| `common/llm_review.py:_call_llm()` | 53 行 | `from common.llm_client import call_llm_simple_str as _call_llm` | 3 行导入 |
+| `src/rag_query.py:call_llm()` | 55 行 + 10 env vars | `from common.llm_client import call_llm_simple` | 6 行薄代理 |
+| `card-holding-suggestion/scripts/scorer.py` | 30 行 HTTP POST | `from common.llm_client import call_llm_file_config` | 15 行适配器 |
+
+`LlmClient` 支持三种调用模式：
+1. **环境变量模式**：自动检测 groq/grok/openrouter，兼容旧环境配置
+2. **文件配置模式**：`~/.llm_config.json`，同旧 scorer
+3. **显式参数模式**：最高优先级，灵活覆盖
+
+### 图片模块统一：common/images.py（新建 257 行）
+
+聚合 2 处分散的图片处理代码 + 按内容哈希去重：
+
+| 旧位置 | 代码量 | 功能 | 新位置 |
+|--------|--------|------|--------|
+| `common/utils.py` | 98 行 | `get_central_image_dir`, `download_image_from_url`, `copy_to_central_image_dir`, `centralize_images` | `common/images.py` + utils 保留 re-export |
+| `src/agent.py:_filter_meaningful_images()` | 63 行 | 图片四层过滤（大小/尺寸/像素方差） | `common/images.py:filter_meaningful_images()` |
+| **新增** | — | `image_hash()`, `deduplicate_images()` | 按 SHA-256 内容哈希去重 |
+
+### 清理
+
+- `common/llm_review.py`：删除 53 行旧 `_call_llm` + `import os` + `import requests` + 4 个 env var
+- `src/rag_query.py`：删除 55 行旧 `call_llm` + 10 个 env var
+- `src/agent.py`：删除 63 行 `_filter_meaningful_images`
+- `common/utils.py`：删除 96 行图片相关代码移入 images.py
+
+### 测试
+- 全量 336 passed，无回归
+
+---
+
 ## v0.15.0 — 2026-06-10
 
 ### Mode C: 仅数据处理（Step1-4，跳过持卡分析+归档）

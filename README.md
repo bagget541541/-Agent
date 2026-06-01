@@ -114,18 +114,18 @@ python _agent.py --archive-only
 ```
 _agent.py               # 根级 stub → src/agent.py（向后兼容）
 rag_query.py            # 根级 stub → src/rag_query.py
-run_pipeline.py         # 根级 stub → src/pipeline.py
+run_pipeline.py         # 根级 stub → run_pipeline.py
 src/                    # 核心源码包
   agent.py              #   Agent 全流程编排
-  pipeline.py           #   管线调度
   rag_query.py          #   RAG 知识库问答
-common/                 # 公共层：数据契约、分类、识别、标准化
+common/                 # 公共层：数据契约、分类、LLM、图片
+  images.py             #   图片生命周期管理（去重/过滤/中心化存储）
+  llm_client.py         #   统一 LLM 客户端（多 provider 自动检测）
 scripts/                # 辅助脚本
   debug/                #   调试/调试工具
   rag/                  #   知识库维护
-  cleanup_images.py     #   图片垃圾清理
 docs/                   # 架构文档
-tests/                  # 全量测试（188 用例）
+tests/                  # 全量测试（420 用例）
 ```
 
 ---
@@ -158,7 +158,9 @@ tests/                  # 全量测试（188 用例）
 - **`review.py`** — 审核队列生成（`build_review_queue` → `data/review/review_queue.md`）
 - **`article_envelope.py`** — 文章信封构建器（微信 content_blocks → 多主题检测）
 - **`topic_splitter.py`** — 主题拆分引擎（6 信号检测 + 置信度打分 + 切点分割 + 过拆修正）
-- **`llm_review.py`** — LLM 辅助审核/复审
+- **`llm_review.py`** — LLM 辅助审核/复审（底层复用 `llm_client.py`）
+- **`llm_client.py`** — 统一 LLM 客户端，支持 groq/grok/openrouter 三 provider 自动检测
+- **`images.py`** — 图片生命周期管理：下载/去重/过滤/中心化存储
 
 ---
 
@@ -531,6 +533,13 @@ SCORE_RULES = {
 - [x] P3: 目录结构整理（src/ 包 + 根级 stub + scripts/debug/ + scripts/rag/ + docs/ + 测试用例）
 - [x] 全量 188 passed，无回归
 
+### M10 — LLM/图片模块统一重构 ✅
+- [x] `common/llm_client.py`: 统一 LLM 客户端（环境变量/文件配置/显式参数三模式，groq/grok/openrouter 自动检测）
+- [x] `common/images.py`: 图片生命周期管理（下载/去重/过滤/中心化存储，内容哈希去重）
+- [x] 聚合 3 处重复 `_call_llm` 代码（llm_review.py 53行 + rag_query.py 55行 + scorer.py 30行→各 3~15 行代理）
+- [x] 聚合 2 处图片滤波代码（utils.py 98行 + agent.py 63行→images.py 独立模块）
+- [x] 全量 420 passed，无回归
+
 ---
 
 ## 修订记录
@@ -539,6 +548,8 @@ SCORE_RULES = {
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
+| v0.17 | 2026-06-13 | 5 项修复（generate_docx 重写/Pillow 取消注释/eastAsia 双设/ensure_dir 导入/generate_merged_docx 入口）+ llm_review 银行去重 + rag_query 路径统一 + 经验教训沉淀 TOOLS.md + 420 全通过 |
+| v0.16 | 2026-06-12 | 统一 LLM 客户端（common/llm_client.py）聚合 3 处重复调用代码、图片生命周期管理（common/images.py）聚合 2 处图片滤波+新增内容哈希去重、336 测试全通过 |
 | v0.15 | 2026-06-10 | Mode C（仅 Step1-4，跳过持卡分析+归档）、图片四层过滤（文件大小/最小尺寸/像素方差）、3 个数据质量修复（标题"未知推出"、去重加强、样板话跳过）、run.bat 菜单补 C 选项 |
 | v0.14 | 2026-06-08 | P3 目录结构整理（src/ 包 + 根级 stub + scripts/ + docs/）、P1 Word 修复逻辑迁移到 normalizer、P2 confidence 打分区分度优化、188 测试全通过 |
 | v0.13 | 2026-06-07 | 验收修复：来源字段净化、分类逻辑统一（删除 3 处本地分类函数）、结构内容清洁（_trim_marketing_intro / _safe_truncate / structured_clean）、display_fields 参数化 |
