@@ -13,7 +13,7 @@ html2text>=2020.1.16
 
 # === OCR 图片文字提取 (可选) ===
 # pytesseract>=0.3.10
-# Pillow>=10.0.0
+Pillow>=10.0.0
 
 # === LLM 评分 (可选) ===
 # openai>=1.0.0

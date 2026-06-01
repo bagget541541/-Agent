@@ -9,6 +9,7 @@ Usage:
 """
 
 import re
+from common.utils import safe_truncate
 
 
 def _strip_marketing_tail(text: str) -> str:
@@ -18,22 +19,6 @@ def _strip_marketing_tail(text: str) -> str:
     text = re.sub(r'珍藏周边礼等你领.*$', '', text).strip()
     text = re.sub(r'【[^】]+】$', '', text).strip()
     return text
-
-
-def _safe_truncate(text: str, max_chars: int = 500) -> str:
-    """按句子边界截断文本（内联版，避免循环导入）。"""
-    if not text or len(text) <= max_chars:
-        return text
-    candidates = []
-    for sep in ['。', '！', '？', '\n']:
-        idx = text.rfind(sep, 0, max_chars)
-        if idx > max_chars * 0.5:
-            candidates.append((idx + 1, sep))
-    if not candidates:
-        idx = text.rfind(' ', 0, max_chars)
-        return text[:idx] + '…' if idx > 10 else text[:max_chars] + '…'
-    best = max(candidates, key=lambda x: x[0])
-    return text[:best[0]]
 
 
 # ── Category action keywords (title is "good enough" if it contains these) ─
@@ -130,9 +115,9 @@ def _generate_title(
             # 修复3：优先提取真正活动名，而不是取正文前30字
             activity_name = _extract_activity_name(activity)
             if activity_name:
-                display = _safe_truncate(activity_name, 30)
+                display = safe_truncate(activity_name, 30)
                 return f"{bank}活动：{display}"
-            return f"{bank}活动：{_safe_truncate(activity, 30)}"
+            return f"{bank}活动：{safe_truncate(activity, 30)}"
         return f"{bank}推出优惠活动"
 
     if category == "权益变更":

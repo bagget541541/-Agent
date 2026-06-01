@@ -22,6 +22,7 @@ from common.classifier import classify_item
 from common.entity_resolver import resolve_bank
 from common.display_fields import generate_display_fields
 from common.review import generate_review_flags
+from common.utils import safe_truncate
 
 
 # ── Internal: structured field generation ─────────────────────────────────
@@ -49,25 +50,6 @@ def _trim_marketing_intro(text: str) -> str:
             break
         text = text[m.end():].lstrip()
     return text
-
-
-def _safe_truncate(text: str, max_chars: int = 500) -> str:
-    """按句子边界截断文本，避免在词中间截断。"""
-    if not text or len(text) <= max_chars:
-        return text
-    # 优先在句号/感叹号/问号处截断
-    candidates = []
-    for sep in ['。', '！', '？', '\n']:
-        idx = text.rfind(sep, 0, max_chars)
-        if idx > max_chars * 0.5:
-            candidates.append((idx + 1, sep))
-    if not candidates:
-        # 退到空格截断
-        idx = text.rfind(' ', 0, max_chars)
-        return text[:idx] + '…' if idx > 10 else text[:max_chars] + '…'
-    # 选最接近 max_chars 的切分点
-    best = max(candidates, key=lambda x: x[0])
-    return text[:best[0]]
 
 
 def _normalize_highlight_text(text: str) -> str:
@@ -210,25 +192,25 @@ def _build_structured_for_category(
         structured["卡亮点"] = ""
         structured["适用人群"] = "信用卡持卡人"
         structured["来源"] = author or url
-        structured["详情"] = _safe_truncate(source_text, 500) if source_text else title
+        structured["详情"] = safe_truncate(source_text, 500) if source_text else title
 
     elif category == "活动":
-        structured["活动内容"] = _safe_truncate(source_text, 300) if source_text else title
+        structured["活动内容"] = safe_truncate(source_text, 300) if source_text else title
         structured["活动时间"] = ""
         structured["适用人群"] = "信用卡持卡人"
 
     elif category == "权益变更":
         structured["消息时间"] = ""
         structured["影响范围"] = ""
-        structured["变更内容"] = _safe_truncate(source_text, 500) if source_text else title
+        structured["变更内容"] = safe_truncate(source_text, 500) if source_text else title
         structured["变更分析"] = ""
 
     elif category == "公告":
-        structured["消息内容"] = _safe_truncate(source_text, 500) if source_text else title
+        structured["消息内容"] = safe_truncate(source_text, 500) if source_text else title
         structured["点评"] = ""
 
     else:
-        structured["详细内容"] = _safe_truncate(source_text, 500) if source_text else title
+        structured["详细内容"] = safe_truncate(source_text, 500) if source_text else title
 
     return structured
 
@@ -604,7 +586,7 @@ def normalize_item(
 
     # P0-4: 强制图片按 item_id 隔离 → data/images/{item_id}/
     if item.images:
-        from common.utils import centralize_images
+        from common.images import centralize_images
         centralized = centralize_images(item.images, item.item_id)
         if centralized:
             item.images = centralized

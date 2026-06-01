@@ -1,0 +1,22 @@
+v0.17 代码修复+测试+增量工具全打包
+
+核心修复：
+1. common/llm_review.py — BANKS 常量去重（交行、浦发各保留一个）；供应商评分 prompt 去重
+2. common/normalizer.py — 归一化流程保护（先校验字段格式再操作）；images 数据完整性校验；llm_client 异常保护
+3. common/utils.py — 移除硬编码重算，接入 common.config 路径
+4. common/config.py / common/display_fields.py — 适配新版 normalizer 和字段扩展
+5. common/images.py / common/llm_client.py — 新增 images 处理模块和 LLM 客户端封装
+6. src/rag_query.py — 优先使用 common.config 路径配置，不再本地重算
+7. src/agent.py — 适配新版 rag_query 和 normalizer 接口
+8. merge_docs.py / export_document.py / generate_report.py / generate_docx.py — eastAsia 中文字体双设修复
+9. requirements.txt — 取消注释 Pillow 依赖
+10. 删除废弃文件：src/pipeline.py、docs/PROCESS_REVIEW.md、docs/最新word问题清单与修复建议.md
+
+测试覆盖：
+11. tests/test_common/test_normalizer.py — 扩展边界测试
+12. tests/test_common/test_images_integration.py — 图片模块集成测试
+13. tests/test_common/test_llm_client_integration.py — LLM 客户端集成测试
+14. tests/test_e2e/ — 端到端流水线测试
+15. test_output/ — 测试产物目录
+
+Co-Authored-By: AtomCode (deepseek-v4-flash) <noreply@atomgit.com>

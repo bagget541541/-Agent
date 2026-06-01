@@ -13,6 +13,8 @@ import re
 from docx import Document
 from docx.shared import Pt, Cm
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
 import os, sys
 
 # 将 word-merger utils 加入路径以共享 IMAGE_WIDTH_CM 常量
@@ -21,18 +23,10 @@ try:
     from utils import IMAGE_WIDTH_CM
 except Exception:
     IMAGE_WIDTH_CM = 13
+from common.config import KNOWN_FIELD_NAMES
 
 IMAGE_PATTERN = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
 
-# 已知字段名集合（冒号结尾时加粗，但不作为顶级标题）
-KNOWN_FIELD_NAMES = {
-    '活动内容', '活动时间', '适用人群',
-    '卡种', '卡亮点', '详情', '来源',
-    '消息时间', '影响范围', '变更内容', '变更分析',
-    '消息内容', '点评',
-    '卡组织', '发卡银行', '年费标准', '有效期限',
-    '原文链接', '发布时间', '作者',
-}
 
 # Markdown 标题正则（支持 # 和 ##）
 HEADING_RE = re.compile(r'^(#{1,6})\s+(.+)$')
@@ -51,6 +45,13 @@ def export_word(content, output_path):
     # 设置默认字体
     style = doc.styles['Normal']
     style.font.name = '宋体'
+    # 同步设置东亚字体
+    rPr = style.element.get_or_add_rPr()
+    rFonts = rPr.find(qn('w:rFonts'))
+    if rFonts is None:
+        rFonts = OxmlElement('w:rFonts')
+        rPr.insert(0, rFonts)
+    rFonts.set(qn('w:eastAsia'), '宋体')
     style.font.size = Pt(12)
 
     # 分割内容，逐行处理
@@ -68,6 +69,12 @@ def export_word(content, output_path):
             # 确保标题也使用宋体
             for run in heading.runs:
                 run.font.name = '宋体'
+                rPr = run._element.get_or_add_rPr()
+                rFonts = rPr.find(qn('w:rFonts'))
+                if rFonts is None:
+                    rFonts = OxmlElement('w:rFonts')
+                    rPr.insert(0, rFonts)
+                rFonts.set(qn('w:eastAsia'), '宋体')
             continue
 
         # ── 2) 检查是否包含图片标记 ──

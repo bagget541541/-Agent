@@ -12,7 +12,9 @@
 
 import json
 import os
+import re
 import sys
+import hashlib
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -25,90 +27,278 @@ try:
 except Exception:
     IMAGE_WIDTH_CM = 13
 
+from common.config import KNOWN_FIELD_NAMES
+
+
+def _detect_parse_mode(doc) -> str:
+    """
+    自动检测文档解析模式
+
+    Returns:
+        "standard" — Heading 1/2 层级清晰，原逻辑不变
+        "announcement" — 只有 Heading 2 无 H1，公告模式
+        "field" — 无 Heading，字段加粗占比 > 20%，字段模式
+    """
+    h1_count = 0
+    h2_count = 0
+    bold_field_count = 0
+    total_para_count = 0
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            continue
+        total_para_count += 1
+        style = para.style.name
+
+        if style == 'Heading 1':
+            h1_count += 1
+        elif style == 'Heading 2':
+            h2_count += 1
+
+        # 检测段落是否以加粗字段名开头
+        if para.runs:
+            first_run = para.runs[0]
+            if first_run.bold and first_run.text.strip():
+                for field in KNOWN_FIELD_NAMES:
+                    if text.startswith(field + '：') or text.startswith(field + ':'):
+                        bold_field_count += 1
+                        break
+
+    # 模式切换逻辑
+    if h1_count == 0 and h2_count > 0:
+        return "announcement"
+
+    if total_para_count > 0 and bold_field_count / total_para_count > 0.2:
+        return "field"
+
+    return "standard"
+
+
+def _parse_announcement_mode(doc, docx_path, images_map, ns) -> dict:
+    """公告模式：无 H1，只有 H2 → 自动创建 H1 容器"""
+    content = {
+        "file": docx_path,
+        "title": "",
+        "h1_sections": [],
+        "full_text": ""
+    }
+
+    # 自动创建"银行公告"作为 H1
+    current_h1 = {
+        "title": "银行公告",
+        "h2_items": [],
+        "content": []
+    }
+    content["h1_sections"].append(current_h1)
+    current_h2 = None
+    full_text_parts = []
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        style = para.style.name
+
+        # 检查段落中的图片
+        drawings = para._element.findall('.//w:drawing', ns)
+        para_images = []
+        for d in drawings:
+            blips = d.findall('.//a:blip', ns)
+            for b in blips:
+                rid = b.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+                if rid and rid in images_map:
+                    para_images.append(rid)
+
+        if not text and not para_images:
+            continue
+
+        if style == 'Heading 2':
+            current_h2 = {
+                "title": text,
+                "content": [],
+                "images": []
+            }
+            current_h1["h2_items"].append(current_h2)
+        elif current_h2 is not None:
+            if text:
+                # 尝试从文本中识别银行名，替换 H1 标题
+                bank_match = re.search(
+                    r'(农行|工行|建行|招行|中行|交行|浦发|中信|光大|民生|华夏|'
+                    r'兴业|广发|平安|邮储|北京银行|上海银行|南京银行|宁波银行|'
+                    r'江苏银行|杭州银行|秦农银行|农商银行|徽商银行|浙商银行|'
+                    r'渤海银行|恒丰银行|银行)',
+                    text
+                )
+                if bank_match and current_h1["title"] == "银行公告":
+                    bank_name = bank_match.group(1)
+                    if bank_name != "银行":
+                        current_h1["title"] = bank_name + "公告"
+                current_h2["content"].append(text)
+            current_h2["images"].extend(para_images)
+        elif current_h1 is not None:
+            if text:
+                current_h1["content"].append(text)
+
+        if text:
+            full_text_parts.append(text)
+
+    content["full_text"] = "\n".join(full_text_parts)
+    content["images_map"] = images_map
+    return content
+
+
+def _parse_field_mode(doc, docx_path, images_map, ns) -> dict:
+    """字段模式：解析 KNOWN_FIELD_NAMES 结构化字段"""
+    content = {
+        "file": docx_path,
+        "title": "",
+        "h1_sections": [],
+        "full_text": ""
+    }
+
+    current_h1 = None
+    current_h2 = None
+    full_text_parts = []
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+
+        # 检查图片
+        drawings = para._element.findall('.//w:drawing', ns)
+        para_images = []
+        for d in drawings:
+            blips = d.findall('.//a:blip', ns)
+            for b in blips:
+                rid = b.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+                if rid and rid in images_map:
+                    para_images.append(rid)
+
+        if not text and not para_images:
+            continue
+
+        # 检测字段名（优先用加粗检测，其次全文匹配）
+        field_match = None
+        first_run_bold = False
+
+        if para.runs:
+            first_run = para.runs[0]
+            if first_run.bold and first_run.text.strip():
+                first_run_bold = True
+                first_text = first_run.text.strip()
+                for field in KNOWN_FIELD_NAMES:
+                    if first_text.startswith(field + '：') or first_text.startswith(field + ':'):
+                        field_match = field
+                        break
+
+        # 全文兜底匹配
+        if not field_match:
+            for field in KNOWN_FIELD_NAMES:
+                if text.startswith(field + '：') or text.startswith(field + ':'):
+                    field_match = field
+                    break
+
+        if field_match:
+            colon = '：' if '：' in text else ':'
+            value = text.split(colon, 1)[1].strip()
+
+            if field_match == '银行' or field_match == '发卡银行':
+                # 创建 H1 容器，标题 = 银行名
+                current_h1 = {
+                    "title": value if value else "银行信息",
+                    "h2_items": [],
+                    "content": []
+                }
+                content["h1_sections"].append(current_h1)
+                current_h2 = None
+            elif field_match == '标题':
+                # 创建 H2 条目
+                current_h2 = {
+                    "title": value if value else text,
+                    "content": [],
+                    "images": [],
+                    "url": ""
+                }
+                if current_h1:
+                    current_h1["h2_items"].append(current_h2)
+                else:
+                    # 无 H1 时创建默认容器
+                    current_h1 = {
+                        "title": "微信文章",
+                        "h2_items": [],
+                        "content": []
+                    }
+                    content["h1_sections"].append(current_h1)
+                    current_h1["h2_items"].append(current_h2)
+            elif field_match == '原文链接':
+                if current_h2:
+                    current_h2["url"] = value
+                elif current_h1:
+                    current_h1["content"].append(text)
+            elif field_match in ('发布时间', '作者'):
+                if current_h2:
+                    if "metadata" not in current_h2:
+                        current_h2["metadata"] = {}
+                    current_h2["metadata"][field_match] = value
+                elif current_h1:
+                    current_h1["content"].append(text)
+            else:
+                # 其他字段：关键信息、点评、消息内容等 → 归入当前 H2 的 content
+                if current_h2:
+                    current_h2["content"].append(text)
+                elif current_h1:
+                    current_h1["content"].append(text)
+        else:
+            # 普通段落
+            if current_h2:
+                if text:
+                    current_h2["content"].append(text)
+                current_h2["images"].extend(para_images)
+            elif current_h1:
+                if text:
+                    current_h1["content"].append(text)
+
+        if text:
+            full_text_parts.append(text)
+
+    content["full_text"] = "\n".join(full_text_parts)
+    content["images_map"] = images_map
+    return content
+
 
 def read_docx_content(docx_path: str) -> dict:
     """
-    读取Word文档内容，保留 Heading 1 → Heading 2 层级结构，追踪图片位置
+    读取 Word 文档内容，自适应三种解析模式
+
+    - standard: Heading 1/2 层级清晰（原逻辑不变）
+    - announcement: 只有 H2 无 H1 → 自动创建 H1 容器
+    - field: KNOWN_FIELD_NAMES 字段加粗 → 结构化解析
 
     Returns:
         包含层级章节的字典
     """
     try:
         from docx import Document
-        from lxml import etree
 
         doc = Document(docx_path)
-        content = {
-            "file": docx_path,
-            "title": "",
-            "h1_sections": [],  # Heading 1 级别的大分类
-            "full_text": ""
-        }
-
-        full_text_parts = []
-        current_h1 = None
-        current_h2 = None
         images_map = _extract_docx_images(docx_path)
 
         # XML 命名空间
-        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
-              'wp': 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing',
-              'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
-              'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+        ns = {
+            'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+            'wp': 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing',
+            'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+            'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+        }
 
-        for para in doc.paragraphs:
-            text = para.text.strip()
-            style = para.style.name
+        # 自动检测解析模式
+        mode = _detect_parse_mode(doc)
+        print(f"  [Parse Mode] {docx_path} → {mode}")
 
-            # 检查段落中是否有图片
-            drawings = para._element.findall('.//w:drawing', ns)
-            para_images = []
-            for d in drawings:
-                blips = d.findall('.//a:blip', ns)
-                for b in blips:
-                    rid = b.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
-                    if rid and rid in images_map:
-                        para_images.append(rid)
-
-            # 跳过空段落（但保留有图片的段落）
-            if not text and not para_images:
-                continue
-
-            # 识别 Heading 1
-            if style == 'Heading 1':
-                current_h1 = {
-                    "title": text,
-                    "h2_items": [],  # 下级 Heading 2 条目
-                    "content": []
-                }
-                content["h1_sections"].append(current_h1)
-                current_h2 = None
-            # 识别 Heading 2
-            elif style == 'Heading 2' and current_h1 is not None:
-                current_h2 = {
-                    "title": text,
-                    "content": [],
-                    "images": []  # 存储该条目的图片 rId
-                }
-                current_h1["h2_items"].append(current_h2)
-            # 普通段落或列表
-            elif current_h2 is not None:
-                if text:
-                    current_h2["content"].append(text)
-                # 将图片关联到当前 h2
-                current_h2["images"].extend(para_images)
-            elif current_h1 is not None:
-                if text:
-                    current_h1["content"].append(text)
-            else:
-                if not content["title"] and len(text) < 80:
-                    content["title"] = text
-
-            if text:
-                full_text_parts.append(text)
-
-        content["full_text"] = "\n".join(full_text_parts)
-        content["images_map"] = images_map
+        if mode == "announcement":
+            content = _parse_announcement_mode(doc, docx_path, images_map, ns)
+        elif mode == "field":
+            content = _parse_field_mode(doc, docx_path, images_map, ns)
+        else:
+            content = _parse_standard_mode(doc, docx_path, images_map, ns)
 
         return content
 
@@ -117,12 +307,81 @@ def read_docx_content(docx_path: str) -> dict:
         return {"file": docx_path, "title": Path(docx_path).stem, "h1_sections": [], "full_text": ""}
 
 
+def _parse_standard_mode(doc, docx_path, images_map, ns) -> dict:
+    """标准模式：原 Heading 1 → Heading 2 层级逻辑不变"""
+    content = {
+        "file": docx_path,
+        "title": "",
+        "h1_sections": [],
+        "full_text": ""
+    }
+
+    full_text_parts = []
+    current_h1 = None
+    current_h2 = None
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        style = para.style.name
+
+        # 检查段落中的图片
+        drawings = para._element.findall('.//w:drawing', ns)
+        para_images = []
+        for d in drawings:
+            blips = d.findall('.//a:blip', ns)
+            for b in blips:
+                rid = b.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+                if rid and rid in images_map:
+                    para_images.append(rid)
+
+        # 跳过空段落（但保留有图片的段落）
+        if not text and not para_images:
+            continue
+
+        # 识别 Heading 1
+        if style == 'Heading 1':
+            current_h1 = {
+                "title": text,
+                "h2_items": [],
+                "content": []
+            }
+            content["h1_sections"].append(current_h1)
+            current_h2 = None
+        # 识别 Heading 2
+        elif style == 'Heading 2' and current_h1 is not None:
+            current_h2 = {
+                "title": text,
+                "content": [],
+                "images": []
+            }
+            current_h1["h2_items"].append(current_h2)
+        # 普通段落或列表
+        elif current_h2 is not None:
+            if text:
+                current_h2["content"].append(text)
+            current_h2["images"].extend(para_images)
+        elif current_h1 is not None:
+            if text:
+                current_h1["content"].append(text)
+        else:
+            if not content["title"] and len(text) < 80:
+                content["title"] = text
+
+        if text:
+            full_text_parts.append(text)
+
+    content["full_text"] = "\n".join(full_text_parts)
+    content["images_map"] = images_map
+    return content
+
+
 def _extract_docx_images(docx_path: str) -> dict:
-    """提取 docx 中的所有图片，返回 {rId: bytes} 映射"""
+    """提取 docx 中的所有图片，按 byte 哈希去重，返回 {rId: bytes} 映射"""
     import zipfile
     from lxml import etree
 
     images = {}
+    seen_hashes = set()
     try:
         with zipfile.ZipFile(docx_path, 'r') as zf:
             # 读取 rels 文件获取 rId → media 映射
@@ -138,12 +397,22 @@ def _extract_docx_images(docx_path: str) -> dict:
                 if 'image' in rel_type and target:
                     rid_to_target[rid] = target
 
-            # 提取图片文件
+            # 提取图片文件，按 byte 哈希去重
             for rid, target in rid_to_target.items():
                 img_path = f'word/{target}' if not target.startswith('/') else target[1:]
                 try:
                     img_data = zf.read(img_path)
-                    images[rid] = img_data
+                    img_hash = hashlib.md5(img_data).hexdigest()
+                    if img_hash not in seen_hashes:
+                        seen_hashes.add(img_hash)
+                        images[rid] = img_data
+                    else:
+                        # 重复图片，保留第一个出现的 rid 映射
+                        for existing_rid, existing_data in images.items():
+                            if hashlib.md5(existing_data).hexdigest() == img_hash:
+                                # 建立别名映射 rId → 已有图片
+                                images[rid] = existing_data
+                                break
                 except KeyError:
                     pass
 
@@ -153,8 +422,32 @@ def _extract_docx_images(docx_path: str) -> dict:
     return images
 
 
+def _title_similarity(t1: str, t2: str) -> float:
+    """
+    计算两个标题的相似度（0.0 ~ 1.0），使用 Jaccard 字符二元组相似度
+
+    阈值参考：同一银行同一条公告的标题相似度通常 ≥ 0.85
+    """
+    if not t1 or not t2:
+        return 0.0
+    # 提取非空格字符的二元组集合
+    s1 = set(t1[i:i+2] for i in range(len(t1) - 1) if t1[i] != ' ')
+    s2 = set(t2[i:i+2] for i in range(len(t2) - 1) if t2[i] != ' ')
+    if not s1 or not s2:
+        return 0.0
+    intersection = s1 & s2
+    union = s1 | s2
+    return len(intersection) / len(union)
+
+
 def merge_contents(contents: list) -> dict:
-    """整合多个文档内容，保留层级结构"""
+    """
+    整合多个文档内容，保留层级结构，支持标题相似度去重
+
+    去重策略（Phase 4）：
+    - 两篇文章标题相似度 ≥ 0.85：保留内容更完整的一篇，丢弃重复
+    - 同一银行 + 同一条公告：合并 key 信息，去除冗余
+    """
     merged = {
         "title": "信用卡周报（整合版）",
         "generated_at": datetime.now().isoformat(),
@@ -172,16 +465,30 @@ def merge_contents(contents: list) -> dict:
 
         # 合并 h1 层级
         for h1 in content.get("h1_sections", []):
-            # 检查是否已存在同名 h1
+            # 检查是否已存在同名或相似标题的 h1
             existing_h1 = None
             for s in merged["h1_sections"]:
-                if s["title"] == h1["title"]:
+                if s["title"] == h1["title"] or _title_similarity(s["title"], h1["title"]) >= 0.85:
                     existing_h1 = s
                     break
 
             if existing_h1:
-                # 合并 h2 条目
-                existing_h1["h2_items"].extend(h1.get("h2_items", []))
+                # 合并 h2 条目（带标题相似度去重）
+                for new_h2 in h1.get("h2_items", []):
+                    dup_h2 = None
+                    for existing_h2 in existing_h1["h2_items"]:
+                        if existing_h2["title"] == new_h2["title"] or _title_similarity(existing_h2["title"], new_h2["title"]) >= 0.85:
+                            # 找到重复 H2，保留内容更完整的一篇
+                            existing_len = len("\n".join(existing_h2.get("content", []))) + len(existing_h2.get("url", ""))
+                            new_len = len("\n".join(new_h2.get("content", []))) + len(new_h2.get("url", ""))
+                            if new_len > existing_len:
+                                # 新条目内容更完整，替换
+                                existing_h1["h2_items"].remove(existing_h2)
+                                existing_h1["h2_items"].append(new_h2)
+                            dup_h2 = True
+                            break
+                    if not dup_h2:
+                        existing_h1["h2_items"].append(new_h2)
                 existing_h1["content"].extend(h1.get("content", []))
             else:
                 merged["h1_sections"].append(h1)
@@ -416,6 +723,15 @@ def create_merged_docx(merged: dict, suggestions: dict, output_path: str):
         style = doc.styles['Normal']
         style.font.name = 'Microsoft YaHei'
         style.font.size = Pt(10.5)
+        # 同步设置东亚字体
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+        rPr = style.element.get_or_add_rPr()
+        rFonts = rPr.find(qn('w:rFonts'))
+        if rFonts is None:
+            rFonts = OxmlElement('w:rFonts')
+            rPr.insert(0, rFonts)
+        rFonts.set(qn('w:eastAsia'), 'Microsoft YaHei')
 
         # 标题
         title = doc.add_heading(merged["title"], level=0)
@@ -580,11 +896,13 @@ def main():
     parser = argparse.ArgumentParser(description='多Word文档整合')
     parser.add_argument('--input', nargs='+', required=True, help='输入docx文件列表')
     parser.add_argument('--output', default='', help='输出文件路径')
+    parser.add_argument('--skip-analysis', action='store_true',
+                        help='跳过持卡分析，仅输出结构化 JSON + Markdown')
 
     args = parser.parse_args()
 
     print("="*60)
-    print("  Multi-Document Merge + Card Holding Suggestions")
+    print("  Multi-Document Merge" + ("" if args.skip_analysis else " + Card Holding Suggestions"))
     print("="*60)
 
     # 1. Read all documents
@@ -604,6 +922,70 @@ def main():
     h1_count = len(merged.get('h1_sections', []))
     h2_count = sum(len(s.get('h2_items', [])) for s in merged.get('h1_sections', []))
     print(f"  Merged: {h1_count} categories, {h2_count} items")
+
+    if args.skip_analysis:
+        # Phase 2: 跳过持卡分析，直接输出 JSON + MD
+        print("\n[Skip Analysis] --skip-analysis 已启用，跳过持卡分析")
+
+        if not args.output:
+            week_label = f"{datetime.now().year}年{datetime.now().month}月第{(datetime.now().day + datetime.now().replace(day=1).weekday()) // 7 + 1}周"
+            base_name = str(PROJECT_ROOT / "data" / f"Merged_Report_{week_label}")
+        else:
+            base_name = args.output.replace('.docx', '')
+
+        # 输出 JSON（带完整结构化信息）
+        hierarchy = []
+        for h1 in merged.get("h1_sections", []):
+            h1_data = {"title": h1["title"], "h2_items": []}
+            for h2 in h1.get("h2_items", []):
+                h1_data["h2_items"].append({
+                    "title": h2["title"],
+                    "content": h2.get("content", []),
+                    "url": h2.get("url", ""),
+                    "metadata": h2.get("metadata", {}),
+                    "image_count": len(h2.get("images", []))
+                })
+            hierarchy.append(h1_data)
+
+        json_output = base_name + ".json"
+        with open(json_output, 'w', encoding='utf-8') as f:
+            json.dump({
+                "merged": {
+                    "title": merged["title"],
+                    "generated_at": merged["generated_at"],
+                    "sources": merged["sources"],
+                    "hierarchy": hierarchy,
+                    "all_images": {k: f"[image {len(v)} bytes]" for k, v in merged.get("all_images", {}).items()}
+                }
+            }, f, ensure_ascii=False, indent=2)
+        print(f"[Output] JSON: {Path(json_output).name}")
+
+        # 输出 Markdown 预览
+        md_output = base_name + ".md"
+        with open(md_output, 'w', encoding='utf-8') as f:
+            f.write(f"# {merged['title']}\n\n")
+            f.write(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
+            f.write(f"**来源**: {', '.join(merged['sources'])}\n\n")
+            f.write("---\n\n")
+            for h1 in merged.get("h1_sections", []):
+                f.write(f"## {h1['title']}\n\n")
+                for line in h1.get("content", []):
+                    if line.strip():
+                        f.write(f"{line}\n\n")
+                for h2 in h1.get("h2_items", []):
+                    f.write(f"### {h2['title']}\n\n")
+                    for line in h2.get("content", []):
+                        if line.strip():
+                            f.write(f"{line}\n\n")
+                    if h2.get("url"):
+                        f.write(f"🔗 原文链接: {h2['url']}\n\n")
+                    for img_rid in h2.get("images", []):
+                        f.write(f"![image](all_images/{img_rid})\n\n")
+            f.write("---\n\n")
+            f.write(f"*由 Credit Card Weekly Report - Mode B 生成*\n")
+        print(f"[Output] Markdown: {Path(md_output).name}")
+        print(f"\n[Success] Skip-analysis 完成，输出 JSON + MD")
+        return True
 
     # 3. Extract items
     items = extract_items_for_analysis(merged)

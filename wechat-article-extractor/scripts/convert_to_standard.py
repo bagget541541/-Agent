@@ -21,7 +21,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from common.schema import CreditCardItem, CreditCardBatch, normalize_category
-from common.utils import extract_bank_name, centralize_images, ensure_dir
+from common.utils import extract_bank_name; from common.images import centralize_images, ensure_dir
 from common.config import ensure_dirs
 from common.normalizer import _build_structured_for_category
 

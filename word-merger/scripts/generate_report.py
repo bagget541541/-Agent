@@ -139,11 +139,18 @@ setup_docx = setup_docx_cached
 
 
 def set_run_font(run, name='Microsoft YaHei', size=None, color=None, bold=False):
-    """统一设置 run 字体属性。"""
+    """统一设置 run 字体属性（含东亚字体）。"""
     Document, Pt, RGBColor, Inches, Cm, WD_ALIGN_PARAGRAPH, WD_TABLE_ALIGNMENT, qn, OxmlElement = setup_docx()
     if size is None:
         size = Pt(10.5)
     run.font.name = name
+    # 同步设置东亚字体
+    rPr = run._element.get_or_add_rPr()
+    rFonts = rPr.find(qn('w:rFonts'))
+    if rFonts is None:
+        rFonts = OxmlElement('w:rFonts')
+        rPr.insert(0, rFonts)
+    rFonts.set(qn('w:eastAsia'), name)
     run.font.size = size
     if color:
         run.font.color.rgb = color
@@ -187,6 +194,14 @@ def generate_report(input_path: str, output_path: str,
     doc = Document()
     style = doc.styles['Normal']
     style.font.name = 'Microsoft YaHei'
+    # 同步设置东亚字体
+    _, _, _, _, _, _, _, qn, OxmlElement = setup_docx()
+    rPr = style.element.get_or_add_rPr()
+    rFonts = rPr.find(qn('w:rFonts'))
+    if rFonts is None:
+        rFonts = OxmlElement('w:rFonts')
+        rPr.insert(0, rFonts)
+    rFonts.set(qn('w:eastAsia'), 'Microsoft YaHei')
     style.font.size = Pt(10.5)
     style.paragraph_format.line_spacing = 1.5
 

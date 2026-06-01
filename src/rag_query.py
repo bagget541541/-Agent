@@ -7,25 +7,16 @@ RAG Query Interface — 信用卡知识库问答
 
 import os, re, json, sys, math, collections, requests, hashlib, pickle, time
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KB_PATH = os.path.join(HERE, "data", "articles_kb.json")
-BM25_CACHE = os.path.join(HERE, "data", "bm25_cache.pkl")
+# 使用统一配置
+from common.config import DATA_DIR
+KB_PATH = str(DATA_DIR / "articles_kb.json")
+BM25_CACHE = str(DATA_DIR / "bm25_cache.pkl")
 TOP_K = 5
 MAX_CONTEXT_CHARS = 3000
 
 NL = chr(10)
 
-# LLM config
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "qwen/qwen3-32b")
-OPENAI_URL = os.environ.get("OPENAI_API_URL", "https://openrouter.ai/api/v1/chat/completions")
-GROK_API_KEY = os.environ.get("GROK_API_KEY", "")
-GROK_MODEL = os.environ.get("GROK_MODEL", "grok-2-latest")
-GROK_URL = "https://api.x.ai/v1/chat/completions"
+# LLM config — 统一从 common.llm_client 读取环境变量
 
 
 # ═══════════════════════════════════════════════
@@ -236,60 +227,13 @@ def query_for_suggestions(category: str, bank: str, title: str, top_k: int = 3) 
 
 
 def call_llm(sys_msg, user_msg):
-    if LLM_PROVIDER == "groq":
-        if not GROQ_API_KEY:
-            return None, "未设置 GROQ_API_KEY 环境变量"
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": GROQ_MODEL,
-            "messages": [
-                {"role": "system", "content": sys_msg},
-                {"role": "user", "content": user_msg}
-            ],
-            "temperature": 0.3,
-            "max_tokens": 1024,
-        }
-        url = GROQ_URL
-    elif LLM_PROVIDER == "grok":
-        if not GROK_API_KEY:
-            return None, "未设置 GROK_API_KEY 环境变量"
-        headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": GROK_MODEL,
-            "messages": [
-                {"role": "system", "content": sys_msg},
-                {"role": "user", "content": user_msg}
-            ],
-            "temperature": 0.3,
-            "max_tokens": 1024,
-        }
-        url = GROK_URL
-    else:  # openrouter / others
-        if not OPENAI_API_KEY:
-            return None, "未设置 OPENAI_API_KEY 环境变量"
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": OPENAI_MODEL,
-            "messages": [
-                {"role": "system", "content": sys_msg},
-                {"role": "user", "content": user_msg}
-            ],
-            "temperature": 0.3,
-            "max_tokens": 1024,
-        }
-        url = OPENAI_URL
-
-    try:
-        r = requests.post(url, headers=headers, json=payload, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        answer = data["choices"][0]["message"]["content"]
-        usage = data.get("usage", {})
-        return answer, usage
-    except requests.exceptions.Timeout:
-        return None, "LLM 请求超时（30s）"
-    except Exception as e:
-        return None, f"LLM 调用失败：{e}"
+    """使用统一 LLM 客户端调用。兼容 ret = call_llm(sys_msg, user_msg) → (content, error) 签名。"""
+    # 确保项目根在 sys.path 中
+    _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, _PROJECT_ROOT)
+    from common.llm_client import call_llm_simple
+    return call_llm_simple(sys_msg, user_msg)
 
 
 # ═══════════════════════════════════════════════
@@ -301,8 +245,8 @@ def print_welcome():
     print("╔════════════════════════════════════════╗")
     print("║   信用卡知识库 RAG 查询 (Qwen/LLaMA)   ║")
     print("╠════════════════════════════════════════╣")
-    print(f"  Provider: {LLM_PROVIDER}")
-    model = GROQ_MODEL if LLM_PROVIDER == "groq" else (GROK_MODEL if LLM_PROVIDER == "grok" else OPENAI_MODEL)
+    print(f"  Provider: {os.environ.get('LLM_PROVIDER', 'groq')}")
+    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile") if os.environ.get("LLM_PROVIDER", "groq") == "groq" else (os.environ.get("GROK_MODEL", "grok-2-latest") if os.environ.get("LLM_PROVIDER", "groq") == "grok" else os.environ.get("OPENAI_MODEL", "qwen/qwen3-32b"))
     print(f"  Model: {model}")
     print("╠════════════════════════════════════════╣")
     print("  输入问题按回车 → 检索 + LLM 回答")

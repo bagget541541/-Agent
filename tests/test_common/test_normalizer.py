@@ -16,7 +16,6 @@ from common.normalizer import (
     _normalize_detail_text,
     _strip_marketing_tail,
     _trim_marketing_intro,
-    _safe_truncate,
     _clean_card_name,
     _build_structured_for_category,
     _build_image_structured,
@@ -24,6 +23,7 @@ from common.normalizer import (
     normalize_batch,
     normalize_topic,
 )
+from common.utils import safe_truncate
 
 
 # ── 清洗函数 ────────────────────────────────────────────
@@ -143,17 +143,17 @@ class TestTrimMarketingIntro:
 class TestSafeTruncate:
     def test_short_text_unchanged(self):
         """短文本不截断"""
-        assert _safe_truncate("短文本", 100) == "短文本"
+        assert safe_truncate("短文本", 100) == "短文本"
 
     def test_sentence_boundary(self):
         """按句子边界截断"""
         text = "第一句话。第二句话。第三句话。"
-        result = _safe_truncate(text, 20)
+        result = safe_truncate(text, 20)
         assert result.endswith("。") or len(result) <= 21
 
     def test_empty_input(self):
-        assert _safe_truncate("", 100) == ""
-        assert _safe_truncate(None, 100) is None
+        assert safe_truncate("", 100) == ""
+        assert safe_truncate(None, 100) is None
 
 
 # ── structured 构建 ─────────────────────────────────────

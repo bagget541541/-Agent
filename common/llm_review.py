@@ -12,109 +12,25 @@ LLM 审核模块 — 对低置信度条目做语义审核和修正建议。
 """
 
 import json
-import os
 import re
-import requests
 
-# ── 加载 .env 文件（如存在） ──
+from common.llm_client import call_llm_simple_str as _call_llm
+from common.config import VALID_CATEGORIES
 
-def _load_dotenv():
-    """简易 .env 加载，无需 python-dotenv 依赖。"""
-    env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-    if not os.path.exists(env_path):
-        return
-    with open(env_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if '=' in line:
-                key, _, val = line.partition('=')
-                key = key.strip()
-                val = val.strip().strip('"').strip("'")
-                if key and val and key not in os.environ:
-                    os.environ[key] = val
+# ── 信用卡领域合法银行名（部分常用）
 
-_load_dotenv()
 
-# ── LLM 配置 ──────────────────────────────────────────────
-
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROK_API_KEY = os.environ.get("GROK_API_KEY", "")
-GROK_MODEL = os.environ.get("GROK_MODEL", "grok-2-latest")
-GROK_URL = "https://api.x.ai/v1/chat/completions"
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "qwen/qwen3-32b")
-OPENAI_URL = os.environ.get("OPENAI_API_URL", "https://openrouter.ai/api/v1/chat/completions")
-
-# 信用卡领域合法分类
-VALID_CATEGORIES = {"新卡", "权益变更", "活动", "公告", "其他"}
 
 # 信用卡领域合法银行名（部分常用）
 _VALID_BANKS = [
     "招商银行", "工商银行", "建设银行", "农业银行", "中国银行", "交通银行",
     "中信银行", "光大银行", "民生银行", "广发银行", "浦发银行", "兴业银行",
-    "华夏银行", "平安银行", "邮储银行", "工商银行", "北京银行", "上海银行",
+    "华夏银行", "平安银行", "邮储银行", "北京银行", "上海银行",
     "江苏银行", "宁波银行", "南京银行", "杭州银行",
 ]
 
 
-def _call_llm(system_msg: str, user_msg: str, timeout: int = 30) -> str:
-    """调用 LLM（复用 rag_query.py 的多 provider 模式）。"""
-    if LLM_PROVIDER == "groq":
-        if not GROQ_API_KEY:
-            return ""
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": GROQ_MODEL,
-            "messages": [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-            "temperature": 0.1,
-            "max_tokens": 512,
-        }
-        url = GROQ_URL
-    elif LLM_PROVIDER == "grok":
-        if not GROK_API_KEY:
-            return ""
-        headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": GROK_MODEL,
-            "messages": [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-            "temperature": 0.1,
-            "max_tokens": 512,
-        }
-        url = GROK_URL
-    else:
-        if not OPENAI_API_KEY:
-            return ""
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": OPENAI_MODEL,
-            "messages": [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-            "temperature": 0.1,
-            "max_tokens": 512,
-        }
-        url = OPENAI_URL
 
-    try:
-        r = requests.post(url, headers=headers, json=payload, timeout=timeout)
-        r.raise_for_status()
-        data = r.json()
-        return data["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"  [LLM Review] API call failed: {e}")
-        return ""
 
 
 def _parse_json_response(text: str) -> dict:

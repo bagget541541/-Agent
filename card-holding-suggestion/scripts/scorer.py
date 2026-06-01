@@ -13,8 +13,13 @@ LLM 语义评分引擎
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass, field, asdict
 from typing import Optional
+
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 # ── 配置 ──────────────────────────────────────────────
 
@@ -308,42 +313,35 @@ def score_with_llm(item: dict) -> ROI_Score:
         result.summary = result.summary.replace("关键词评分", "关键词评分（LLM未配置）")
         return result
 
-    _print_config_summary(api_base, model, api_key)
+    # 尝试调用统一 LLM 客户端
+    from common.llm_client import call_llm_file_config
 
-    try:
-        import requests as req
+    reply, err = call_llm_file_config(
+        prompt=prompt,
+        temperature=0.3,
+        max_tokens=2048,
+        timeout=60,
+        api_key=cfg.get("api_key") or os.environ.get("LLM_API_KEY", ""),
+        api_base=cfg.get("api_base") or os.environ.get("LLM_API_BASE", DEFAULT_API_BASE),
+        model=cfg.get("model") or os.environ.get("LLM_MODEL", DEFAULT_MODEL),
+    )
 
-        resp = req.post(
-            f"{api_base.rstrip('/')}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "max_tokens": 2048,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        reply = resp.json()["choices"][0]["message"]["content"]
-        result = _parse_llm_response(reply)
-        result.scorer_used = "llm"
-        is_hl, hl_reason = _calc_highlight(category, result.overall_score, result.overall_roi)
-        result.is_highlight = is_hl
-        result.highlight_reason = hl_reason
-        # LLM 模式下用评分生成注意事项
-        text_all = f"{item.get('title', '')} {item.get('raw_text', '')}"
-        result.notes = _generate_notes(category, result.overall_score, text_all)
-        return result
-    except Exception as exc:
-        print(f"  [LLM警告] API 调用失败 ({exc})，降级到关键词评分", file=__import__("sys").stderr, flush=True)
+    if err:
+        print(f"  [LLM警告] API 调用失败 ({err})，降级到关键词评分", file=__import__("sys").stderr, flush=True)
         result = score_with_keywords(item, dims)
         result.scorer_used = "keyword_fallback"
-        result.summary = f"LLM调用失败，已降级（{type(exc).__name__}）"
+        result.summary = f"LLM调用失败，已降级（{err}）"
         return result
+
+    result = _parse_llm_response(reply)
+    result.scorer_used = "llm"
+    is_hl, hl_reason = _calc_highlight(category, result.overall_score, result.overall_roi)
+    result.is_highlight = is_hl
+    result.highlight_reason = hl_reason
+    # LLM 模式下用评分生成注意事项
+    text_all = f"{item.get('title', '')} {item.get('raw_text', '')}"
+    result.notes = _generate_notes(category, result.overall_score, text_all)
+    return result
 
 
 # ── 关键词评分（降级方案） ─────────────────────────────
