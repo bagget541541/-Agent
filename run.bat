@@ -17,9 +17,9 @@ echo.
 
 echo Select mode:
 echo.
-echo   [A] Full pipeline - WeChat URLs + Bank scraping -> Generate report
-echo   [B] Merge mode - Existing Word docs -> Merge + Suggestions -> Output
-echo   [C] Quick mode - Step 1-4 only -> Markdown with images (skip Step5-6)
+echo   [A] Full pipeline - WeChat URLs + Bank scraping + Webpage URLs -^> Report
+echo   [B] Merge mode - Existing Word docs -^> Merge + Suggestions -^> Output
+echo   [C] Quick mode - Step 1-4 only -^> Markdown with images (skip Step5-6)
 echo   [Q] Exit
 echo.
 set /p choice=Enter choice (A/B/C/Q, default A):
@@ -44,7 +44,16 @@ echo ============================================================
 echo   Mode A: Full Pipeline (Scrape + Generate Report)
 echo ============================================================
 echo.
-python run_pipeline.py --mode a
+echo Enter URL(s) — paste one or more links, or leave blank to skip:
+echo.
+set /p wechat_urls=WeChat article URL(s) (空格分隔):
+set /p webpage_urls=Webpage URL(s) (信用卡产品页/新闻等, 空格分隔):
+echo.
+set args=--mode a
+if not "%wechat_urls%"=="" set args=%args% --wechat-url %wechat_urls%
+if not "%webpage_urls%"=="" set args=%args% --webpage-url %webpage_urls%
+echo python _agent.py %args%
+python _agent.py %args%
 goto :done
 
 :mode_b
@@ -59,10 +68,19 @@ goto :done
 :mode_c
 echo.
 echo ============================================================
-echo   Mode C: Quick Mode (Step 1-4 only -> Markdown with images)
+echo   Mode C: Quick Mode (Step 1-4 only -^> Markdown with images)
 echo ============================================================
 echo.
-python run_pipeline.py --mode c
+echo Enter URL(s) — paste one or more links, or leave blank to skip:
+echo.
+set /p wechat_urls=WeChat article URL(s) (空格分隔):
+set /p webpage_urls=Webpage URL(s) (信用卡产品页/新闻等, 空格分隔):
+echo.
+set args=--mode c
+if not "%wechat_urls%"=="" set args=%args% --wechat-url %wechat_urls%
+if not "%webpage_urls%"=="" set args=%args% --webpage-url %webpage_urls%
+echo python _agent.py %args%
+python _agent.py %args%
 goto :done
 
 :done

@@ -5,8 +5,9 @@
 
 全流程编排入口，串联所有 skill：
   Step 1: 抓取微信文章
-  Step 2: 抓取银行公告
-  Step 3: 分类 + 合并
+ Step 1b: 抓取通用网页（信用卡产品页/新闻等）
+ Step 2: 抓取银行公告
+ Step 3: 分类 + 合并
   Step 4: 生成 Word 周报
   Step 5: 持卡用卡分析
   Step 6: 追加持卡建议到周报
@@ -228,6 +229,67 @@ def _analysis_error(error_code: str, message: str, timeout_seconds: int = None, 
     if model:
         payload["model"] = model
     return payload
+
+
+def step1_fetch_webpages(urls: list[str]) -> list[dict]:
+    """
+    Step 1b: 抓取通用网页（信用卡产品页、新闻等非微信链接）
+
+    使用 news-analyzer 的 extract_content.py 提取标题和正文。
+    微信链接 (mp.weixin.qq.com) 自动交给 step1_fetch_wechat 处理。
+
+    Args:
+        urls: 通用网页 URL 列表
+
+    Returns:
+        dict 列表，每项 {url, title, content_text, source="webpage"}
+    """
+    print("\n" + "=" * 60)
+    print("Step 1b: Fetch webpages")
+    print("=" * 60)
+
+    if not urls:
+        print("  [Skip] No webpage URLs provided")
+        return []
+
+    # 过滤出非微信链接
+    non_wechat = [u for u in urls if "mp.weixin.qq.com" not in u]
+    if not non_wechat:
+        print("  [Skip] All URLs are WeChat articles, handled by Step 1")
+        return []
+
+    print(f"  Webpage URLs to fetch: {len(non_wechat)}")
+
+    # 导入 extract_content.py
+    extractor_path = PROJECT_ROOT / "news-analyzer" / "scripts"
+    _extractor_str = str(extractor_path)
+    if _extractor_str not in sys.path:
+        sys.path.insert(0, _extractor_str)
+
+    try:
+        from extract_content import process_urls as extract_process_urls
+    except ImportError as e:
+        print(f"  [Error] extract_content import failed: {e}")
+        return []
+
+    results = extract_process_urls(non_wechat, max_workers=4, insecure=False)
+
+    articles = []
+    for r in results:
+        if r.get("error"):
+            print(f"  [Failed] {r['url'][:60]}...: {r.get('content','')[:80]}")
+            continue
+        articles.append({
+            "title": r.get("title", "无标题"),
+            "url": r.get("url", ""),
+            "content_text": r.get("content", ""),
+            "source": "webpage",
+            "fetched_at": datetime.now().isoformat(),
+        })
+        print(f"  [OK] {articles[-1]['title'][:40]}...")
+
+    print(f"  Fetched: {len(articles)}/{len(non_wechat)} webpages")
+    return articles
 
 
 def step1_fetch_wechat(urls: list[str] = None) -> list[dict]:
@@ -593,7 +655,9 @@ def step2_fetch_bank_news(days: int = 7) -> list[dict]:
         return []
 
 
-def step3_merge(wechat_articles: list, bank_announcements: list, batch_label: str = "") -> CreditCardBatch:
+def step3_merge(wechat_articles: list, bank_announcements: list,
+                webpage_articles: list = None,
+                batch_label: str = "") -> CreditCardBatch:
     """
     Step 3: Merge data into standard format
 
@@ -602,6 +666,7 @@ def step3_merge(wechat_articles: list, bank_announcements: list, batch_label: st
     Args:
         wechat_articles: WeChat article list
         bank_announcements: Bank announcement list
+        webpage_articles: Generic webpage article list (product pages, news, etc.)
         batch_label: Batch label
 
     Returns:
@@ -670,6 +735,19 @@ def step3_merge(wechat_articles: list, bank_announcements: list, batch_label: st
             skip_auto_classify=True,
         )
         batch.add(item)
+
+    # Convert webpage articles via normalizer (let auto-classify handle category)
+    if webpage_articles:
+        for article in webpage_articles:
+            raw_text = article.get("content_text") or ""
+            if not raw_text.strip():
+                print(f"  [Skip] Empty content: {article.get('url','')[:60]}...")
+                continue
+            # 复用 _item_to_mapping 构建标准字段
+            raw = _item_to_mapping(article)
+            item = normalize_item(raw, source="website")
+            batch.add(item)
+        print(f"  Webpage articles merged: {len(webpage_articles)}")
 
     print(f"  Merged: {batch.size()} items")
     print(f"  Category breakdown:")
@@ -1245,6 +1323,7 @@ def step7_archive(batch: CreditCardBatch, report_file: str, analysis: dict) -> s
 
 def run_pipeline(
     wechat_urls: list[str] = None,
+    webpage_urls: list[str] = None,
     bank_days: int = 7,
     scorer: str = "keyword",
     model: str = None,
@@ -1257,6 +1336,7 @@ def run_pipeline(
 
     Args:
         wechat_urls: 微信文章 URL 列表
+        webpage_urls: 通用网页 URL 列表（信用卡产品页、新闻等）
         bank_days: 银行公告抓取天数
         scorer: 评分模式
         model: LLM 模型
@@ -1284,14 +1364,20 @@ def run_pipeline(
             print("[Error] batch_merged.json not found")
         return
 
-    # Step 1-2: 抓取数据（每一步失败均不影响后续，默认值为空列表）
+    # Step 1b + 2: 抓取数据（每一步失败均不影响后续，默认值为空列表）
     wechat_articles: list[dict] = []
+    webpage_articles: list[dict] = []
     bank_announcements: list[dict] = []
 
     if not skip_fetch:
         wechat_articles = result.run_step(
             "Step1 微信抓取",
             lambda: step1_fetch_wechat(wechat_urls) or [],
+            default=[],
+        )
+        webpage_articles = result.run_step(
+            "Step1b 通用网页",
+            lambda: step1_fetch_webpages(webpage_urls or []) or [],
             default=[],
         )
         bank_announcements = result.run_step(
@@ -1305,7 +1391,9 @@ def run_pipeline(
     # Step 3: 合并
     batch = result.run_step(
         "Step3 合并数据",
-        lambda: step3_merge(wechat_articles, bank_announcements, batch_label),
+        lambda: step3_merge(wechat_articles, bank_announcements,
+                            webpage_articles=webpage_articles,
+                            batch_label=batch_label),
         default=CreditCardBatch(batch_label=batch_label),
     )
 
@@ -1444,6 +1532,7 @@ def main():
     )
 
     parser.add_argument("--wechat-url", nargs="+", help="微信文章 URL 列表")
+    parser.add_argument("--webpage-url", nargs="+", help="通用网页 URL 列表（信用卡产品页、新闻等）")
     parser.add_argument("--bank-days", type=int, default=7, help="银行公告抓取天数 (默认 7)")
     parser.add_argument("--scorer", choices=["keyword", "llm"], default="keyword",
                         help="评分模式 (默认 keyword)")
@@ -1457,6 +1546,7 @@ def main():
 
     run_pipeline(
         wechat_urls=args.wechat_url,
+        webpage_urls=args.webpage_url,
         bank_days=args.bank_days,
         scorer=args.scorer,
         model=args.model,
