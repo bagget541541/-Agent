@@ -190,6 +190,37 @@ def generate_report(input_path: str, output_path: str,
     items = batch.get('items', [])
     batch_label = clean_xml_text(batch.get('batch_label', ''))
 
+    def _normalize_structured(s: dict) -> dict:
+        """把上游常见的结构化字段别名映射到下游期望的字段名，返回新字典。"""
+        if not isinstance(s, dict):
+            return s or {}
+        alias = {
+            '亮点': '卡亮点',
+            '卡亮点': '卡亮点',
+            '生效日期': '时间',
+            '活动时间': '时间',
+            '时间': '时间',
+            '原文链接': '原文链接',
+            '来源': '来源',
+            '来源链接': '来源',
+            '详情': '详情',
+            '适用人群': '适用人群',
+            '影响范围': '影响范围',
+            '变更内容': '变更内容',
+            '点评': '点评',
+            '消息内容': '消息',
+            '消息': '消息',
+            '卡种': '卡种',
+        }
+        out = {}
+        for k, v in s.items():
+            nk = alias.get(k, k)
+            # 如果目标键已存在，优先保留已有值（避免覆盖更精准字段）
+            if nk in out and out[nk]:
+                continue
+            out[nk] = v
+        return out
+
     # ── 创建文档 ──────────────────────────────────────────
     doc = Document()
     style = doc.styles['Normal']
@@ -277,8 +308,12 @@ def generate_report(input_path: str, output_path: str,
         highlight_idx += 1
         # P0-1: 优先消费标准化字段
         bank = it.get('source_name') or it.get('bank', '')
+        # 优先从 highlight_summary，其次按分类使用合适的结构化字段，再 fallback 到 display_title/title
+        structured_for_highlight = _normalize_structured(it.get('structured') or {})
         summary = (
             it.get('highlight_summary')
+            or (structured_for_highlight.get('变更内容') if cat == '权益变更' else None)
+            or (structured_for_highlight.get('活动内容') if cat == '活动' else None)
             or it.get('display_title')
             or it.get('title', '')
         )
@@ -323,7 +358,20 @@ def generate_report(input_path: str, output_path: str,
             url = item.get('url', '')
             raw_text = item.get('raw_text', '')
             structured = item.get('structured_clean') or item.get('structured', {})
+            # 规范字段名别名，确保下游模板能匹配到常见上游键名
+            structured = _normalize_structured(structured)
+            # 缓存回 item，避免后续重复规范化
+            item['structured_clean'] = structured
             images = item.get('images', [])
+
+            # fallback: 如果 item['url'] 为空，尝试从 structured 中提升常见的原文链接字段
+            if not url and isinstance(structured, dict):
+                for candidate in ('原文链接', '原文链接：', '原文链接:', '来源', '来源链接', 'source', 'source_url'):
+                    v = structured.get(candidate)
+                    if v:
+                        url = v
+                        item['url'] = v
+                        break
 
             # ── 条目标题 ──
             doc.add_heading(clean_xml_text(f'{idx}. {title_text}'), level=2)
@@ -372,6 +420,11 @@ def generate_report(input_path: str, output_path: str,
 
             # ── 图片嵌入（插入在结构化字段与详细内容之间） ──
             if add_images and images:
+                # 记录不存在的图片路径，便于排查（临时目录被清理或路径错误）
+                missing_files = [p for p in images if not os.path.isfile(p)]
+                if missing_files:
+                    print(f"  [Warn] 图片文件不存在: {', '.join([os.path.basename(p) for p in missing_files])}")
+
                 valid_images = [p for p in images if os.path.isfile(p) and not is_ad_image(p)]
                 skipped = len(images) - len(valid_images)
                 if valid_images:

@@ -304,6 +304,12 @@ def main():
     else:
         cache_msg = "无缓存"
 
+    # 删除向量缓存（如果有）
+    vector_cache = os.path.join(os.path.dirname(KB_PATH), "vector_cache.pkl")
+    if os.path.isfile(vector_cache):
+        os.remove(vector_cache)
+        cache_msg += " + vector cache"
+
     print(f"\n结果: 新增 {new_count} 篇文章, {sum(1 for e in kb['entries'] if e['article_id'] in new_article_ids)} 条目")
     print(f"KB 总计: {kb['total_entries']} 条目, {kb['total_articles']} 文章")
     print(f"BM25 {cache_msg}")

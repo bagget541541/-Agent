@@ -512,16 +512,31 @@ def extract_bank_from_content(h1_title: str, content_lines: list) -> str:
 def extract_structured_fields(content_lines: list) -> dict:
     """从 content 文本中提取 '字段名：值' 格式的结构化字段"""
     structured = {}
+    # 别名映射：将上游常见字段名映射为下游约定的标准键名
+    alias_map = {
+        '亮点': '卡亮点', '卡亮点': '卡亮点',
+        '生效日期': '时间', '时间': '时间', '发布时间': '时间', '活动时间': '时间',
+        '原文链接': '原文链接', '来源': '来源', '来源链接': '来源',
+        '详情': '详情', '卡种': '卡种', '适用人群': '适用人群',
+        '影响范围': '影响范围', '变更内容': '变更内容', '点评': '点评',
+        '消息内容': '消息', '消息': '消息', '结论': '结论', '亮点摘要': '卡亮点'
+    }
+
     for line in content_lines:
         line = line.strip()
         if not line:
             continue
-        m = re.match(r'^(.{2,8})[：:]\s*(.+)', line)
+        m = re.match(r'^(.{1,16})[：:]\s*(.+)', line)
         if m:
             field_name = m.group(1).strip()
             field_value = m.group(2).strip()
-            if len(field_value) <= 200:
-                structured[field_name] = field_value
+            if len(field_value) <= 2000:
+                # 标准化字段名
+                std_name = alias_map.get(field_name, field_name)
+                # 如果字段已存在且已有值，则跳过以避免覆盖更完整的信息
+                if std_name in structured and structured[std_name]:
+                    continue
+                structured[std_name] = field_value
     return structured
 
 
@@ -589,13 +604,21 @@ def contents_to_items(contents: list) -> list:
                 bank = extract_bank_from_content(h1_title, content_lines)
                 url = h2.get("url", "")
 
+                structured = extract_structured_fields(content_lines)
+                # 如果 item 顶层没有 url，尝试从 structured 的标准字段提升
+                if not url:
+                    for cand in ('原文链接', '来源'):
+                        if structured.get(cand):
+                            url = structured.get(cand)
+                            break
+
                 item = {
                     "category": category,
                     "title": h2_title,
                     "bank": bank,
                     "url": url,
                     "raw_text": raw_text[:3000],
-                    "structured": extract_structured_fields(content_lines),
+                    "structured": structured,
                     "highlight_summary": "",
                     "images": resolve_image_paths(h2, content),
                     "_source_file": Path(content.get("file", "")).name,

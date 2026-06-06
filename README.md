@@ -361,23 +361,24 @@ python -c "from common.archive import archive_batch; from common.schema import C
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq")  # → "openai" 切换
 ```
 
-### 检索方案：BM25（零外部依赖）
+### 检索方案：混合检索（BM25 + 向量检索 + RRF 融合）
 
 | 组件 | 方案 |
 |------|------|
-| 分词 | 中文按字+词混合，英文按空格 |
-| 索引 | BM25 (k1=1.5, b=0.75) |
-| 缓存 | `data/bm25_cache.pkl`，首次构建后秒加载 |
+| 关键词检索 | BM25 (k1=1.5, b=0.75) |
+| 语义检索 | BAAI/bge-small-zh-v1.5（512 维中文 embedding） |
+| 融合算法 | Reciprocal Rank Fusion (RRF) |
+| 缓存 | BM25: `data/bm25_cache.pkl`，向量: `data/vector_cache.pkl` |
 | Top-K | 5 条，每条截取前 3000 字符 |
 
-**当前无需向量检索**：BM25 对信用卡专有名词（"温暖升级"、"缩水"、"里程兑换"）效果足够好，等有网络环境可升级为 embedding。
+**混合检索优势**：BM25 擅长精确关键词匹配，向量检索擅长语义理解，RRF 融合两者提升检索质量。
 
-### 知识库现状（已清洗，2026-05-30）
+### 知识库现状（已清洗，2026-06-05）
 
 | 指标 | 数值 |
 |------|------|
 | 来源文章数 | 59 篇（仅信用卡相关） |
-| 切分条目数 | 405 条 |
+| 切分条目数 | 390 条 |
 | 日期范围 | 2017-03-18 ~ 2026-05-27（约 9 年） |
 | 覆盖银行 | 26 家 |
 | 噪声删除 | 388 条非卡内容已移除 ✅ |
@@ -394,13 +395,14 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq")  # → "openai" 切换
 
 ```cmd
 set GROQ_API_KEY=gsk_你的key
-python rag_query.py
+py -3.13 rag_query.py
 ```
 
 | 命令 | 功能 |
 |------|------|
-| `任意问题` | BM25 检索 + LLM 生成回答 |
+| `任意问题` | 混合检索 + LLM 生成回答 |
 | `/debug` | 只看检索结果，不调 LLM |
+| `/mode` | 切换 hybrid/bm25_only 模式 |
 | `/exit` | 退出 |
 
 详见 [`RAG知识库.md`](./RAG知识库.md) 完整复盘文档。`kb_add_article.py` 可单篇/批量新增文章到知识库。
@@ -578,3 +580,43 @@ SCORE_RULES = {
 | v0.9 | 2026-05-30 | 最小闭环场景验证完成：交互式入口、多文档整合、LLM整体分析、层级保留、图片保留、项目清理 |
 | v0.8 | 2026-05-30 | RAG 知识库问答系统（BM25 + LLM）、知识库清洗（405条/59篇）、项目文件清理 |
 | v0.7 | 2026-05-30 | 图片广告过滤、LLM 评分 bugfix（mimo-v2-pro）、scorer_used 可审计 |
+
+---
+
+## 端到端测试 (E2E) 与校验脚本
+
+下面是我们在调试 / 回归时采用的端到端测试流程（在本仓库已验证）：
+
+1) 生成/重新合并 JSON（跳过 LLM 合并以尽快得到原始条目）：
+
+```powershell
+python merge_docs.py --input data\信用卡资讯汇总_0605.docx data\Weekly_Report_2026年6月第1周.docx --output data\merge_test_0606_generated.docx --skip-analysis
+# 生成示例: data/merge_test_0606_generated.json
+```
+
+2) 从标准 JSON 生成最终 Word 报告：
+
+```powershell
+python word-merger\scripts\generate_report.py --input data\merge_test_0606.json --output data\merge_test_0606_final.docx
+# 输出示例: data/merge_test_0606_final.docx
+```
+
+3) 运行校验脚本（图片存在性 / 尺寸 / 疑似广告图）：
+
+```powershell
+python scripts\validate_batch.py --input data\merge_test_0606.json --output data\merge_test_0606_report_final.json
+# 输出示例: data/merge_test_0606_report_final.json
+```
+
+4) 可选 — 图片位置自动校验（对比 docx 段落内 rId 顺序并给出人工建议）：
+
+```powershell
+python scripts\check_image_placement.py --input data\merge_test_0606.json --output data\merge_test_0606_image_placement_final.json
+# 输出示例: data/merge_test_0606_image_placement_final.json
+```
+
+说明：
+- 若执行自动 remap，会在替换前创建备份，例如 `data/merge_test_0606.json.pre_remap.bak`。
+- `validate_batch.py` 的检测规则见 `scripts/validate_batch.py`；疑似广告图会列入 `ad_like_images`。
+- `check_image_placement.py` 会尝试按标题匹配 H2 段落并比较 rId 顺序，若不一致会给出 `remap_to_doc_order` 建议供人工确认或自动修正。
+

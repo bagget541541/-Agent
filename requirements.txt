@@ -23,3 +23,7 @@ lxml>=5.0.0
 
 # === 工具 ===
 pyyaml>=6.0
+
+# === 向量检索 (可选, 用于混合检索) ===
+numpy>=1.24.0
+sentence-transformers>=2.2.0

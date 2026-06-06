@@ -16,6 +16,8 @@ SKILLS_DIR = PROJECT_ROOT                     # skills 目录
 DATA_DIR = PROJECT_ROOT / "data"              # 统一数据输出目录
 ARCHIVE_DIR = DATA_DIR / "archive"            # 知识库归档目录
 TEMP_DIR = DATA_DIR / "temp"                  # 临时文件
+VECTOR_CACHE = DATA_DIR / "vector_cache.pkl"  # 向量索引缓存
+EMBEDDING_MODEL = "D:/models/bge-small-zh-v1.5"   # 默认 embedding 模型（本地路径）
 
 # ── 各 skill 路径 ──────────────────────────────────────
 NEWS_ANALYZER_DIR = SKILLS_DIR / "news-analyzer"

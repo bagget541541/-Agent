@@ -1,6 +1,6 @@
 # RAG 知识库问答系统 — 项目复盘文档
 
-最后更新: 2026-05-31
+最后更新: 2026-06-05
 
 ---
 
@@ -12,19 +12,25 @@
 
 ## 二、RAG 实现方案
 
-### 2.1 检索方式：BM25（纯 Python 实现，零外部依赖）
+### 2.1 检索方式：混合检索（BM25 + 向量检索 + RRF 融合）
 
 | 组件 | 方案 | 说明 |
 |------|------|------|
-| 分词 | 正则 + jieba-like 字符规则 | 中文按字+词混合，英文按空格 |
-| 索引 | BM25 (k1=1.5, b=0.75) | 经典概率检索模型 |
-| 缓存 | pickle 序列化 | 首次构建后存 `data/bm25_cache.pkl`，后续秒加载 |
+| 关键词检索 | BM25 (k1=1.5, b=0.75) | 经典概率检索模型，零外部依赖 |
+| 语义检索 | BAAI/bge-small-zh-v1.5 | 中文 embedding 模型，512 维向量 |
+| 融合算法 | Reciprocal Rank Fusion (RRF) | 基于排名的融合，避免分数尺度不一致 |
+| 向量存储 | numpy 数组 + pickle 序列化 | 轻量级，适合小规模知识库 |
+| 缓存 | pickle 序列化 | BM25: `data/bm25_cache.pkl`，向量: `data/vector_cache.pkl` |
 | Top-K | 5 条 | 每条截取前 3000 字注入 LLM |
 
-**为什么不选向量检索：**
-- 环境无网络，`pip install sentence-transformers` 连不上 PyPI
-- BM25 对中文信用卡专有名词（"温暖升级"、"缩水"、"里程兑换"）效果足够好
-- 等环境通了可以升级为 embedding + 向量库
+**混合检索优势：**
+- BM25 擅长精确关键词匹配（银行名、卡名、专业术语）
+- 向量检索擅长语义理解（同义词、近义词、跨期对比）
+- RRF 融合两者优势，提升整体检索质量
+
+**Fallback 机制：**
+- 如果 sentence-transformers 不可用或模型加载失败，自动降级到 BM25-only 模式
+- 通过 `/mode` 命令可手动切换 hybrid/bm25_only 模式
 
 ### 2.2 LLM 模型选择
 
@@ -114,16 +120,17 @@ cd D:\ckl\soft\skill下载合集\project_20260516_084851\projects
 :: 设置 API Key
 set GROQ_API_KEY=gsk_你的key
 
-:: 启动 RAG 问答
-python rag_query.py
+:: 启动 RAG 问答（使用 Python 3.13）
+py -3.13 rag_query.py
 ```
 
 ### 交互命令
 
 | 输入 | 功能 |
 |------|------|
-| 任意问题 | BM25 检索 + LLM 生成回答 |
+| 任意问题 | 混合检索 + LLM 生成回答 |
 | `/debug` | 只看检索结果，不调 LLM |
+| `/mode` | 切换 hybrid/bm25_only 模式 |
 | `/exit` | 退出 |
 
 ---
@@ -146,9 +153,12 @@ python kb_add_article.py D:\ckl\个人\bat\moat-site\src\content\articles
 
 新增后自动追加到 KB、删除 BM25 缓存，下次 RAG 查询时自动重建索引。
 
-### 中期
+### 中期 ✅ 已完成
 
-4. **升级向量检索**：等网络通了装 `sentence-transformers`，用 embedding 替换 BM25，解决同义词问题
+4. ✅ **升级混合检索**：已实现 BM25 + 向量检索 + RRF 融合
+   - 使用 `BAAI/bge-small-zh-v1.5` 中文 embedding 模型
+   - 支持自动降级到 BM25-only 模式
+   - 通过 `/mode` 命令可手动切换
 5. **增加标题级快速匹配**：先按文章标题精确匹配过滤，再对正文做 RAG
 
 ### 长期
@@ -163,9 +173,13 @@ python kb_add_article.py D:\ckl\个人\bat\moat-site\src\content\articles
 | 文件 | 说明 |
 |------|------|
 | `rag_query.py` | RAG 问答入口（315 行） |
-| `data/articles_kb.json` | 知识库（405 条/59 篇，已清洗） |
+| `common/hybrid_retriever.py` | 混合检索核心模块（280 行） |
+| `data/articles_kb.json` | 知识库（390 条/59 篇，已清洗） |
 | `data/bm25_cache.pkl` | BM25 索引缓存（自动重建） |
+| `data/vector_cache.pkl` | 向量索引缓存（自动重建） |
+| `D:/models/bge-small-zh-v1.5/` | 本地 embedding 模型 |
 | `kb_add_article.py` | 新增文章到 KB 的工具 |
 | `convert_rag_batch.py` | 全量 KB 转换器 |
+| `tests/test_hybrid_retriever.py` | 混合检索单元测试 |
 | `PROJECT_PLAN.md` | 项目计划（M3 标记了"知识库检索"） |
 | `CHANGELOG.md` | 修订记录 |

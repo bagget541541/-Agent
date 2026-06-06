@@ -9,6 +9,7 @@ import os, re, json, sys, math, collections, requests, hashlib, pickle, time
 
 # 使用统一配置
 from common.config import DATA_DIR
+from common.hybrid_retriever import build_or_load_hybrid
 KB_PATH = str(DATA_DIR / "articles_kb.json")
 BM25_CACHE = str(DATA_DIR / "bm25_cache.pkl")
 TOP_K = 5
@@ -177,22 +178,22 @@ def build_prompt(query, entries, scores):
 # ── 持卡建议 RAG 查询 ──────────────────────────────
 
 # 全局缓存，避免每次重新加载 KB 和 BM25
-_RAG_CACHE = {"entries": None, "bm25": None}
+_RAG_CACHE = {"entries": None, "retriever": None}
 
 
 def query_for_suggestions(category: str, bank: str, title: str, top_k: int = 3) -> list[dict]:
     """为持卡建议检索历史参考。
-    
+
     根据分类构造查询词，返回匹配的历史 KB 条目。
     可用于 step5_analyze 中对 highlight 条目补充参考。
     """
-    # 延迟加载 KB 和 BM25（全局缓存）
+    # 延迟加载 KB 和检索器（全局缓存）
     if _RAG_CACHE["entries"] is None:
         _RAG_CACHE["entries"] = load_kb()
-        _RAG_CACHE["bm25"] = build_or_load_bm25(_RAG_CACHE["entries"])
-    
+        _RAG_CACHE["retriever"] = build_or_load_hybrid(_RAG_CACHE["entries"])
+
     entries = _RAG_CACHE["entries"]
-    bm25 = _RAG_CACHE["bm25"]
+    retriever = _RAG_CACHE["retriever"]
     
     # 根据分类构造查询词
     if category == "新卡":
@@ -206,11 +207,11 @@ def query_for_suggestions(category: str, bank: str, title: str, top_k: int = 3) 
     else:
         query = f"{bank} {title}"
     
-    scores = bm25.search(query, top_k=top_k)
+    scores = retriever.search(query, top_k=top_k)
     if not scores:
         # 降级：只用银行+标题简搜
         query2 = f"{bank} {title[:10]}"
-        scores = bm25.search(query2, top_k=top_k)
+        scores = retriever.search(query2, top_k=top_k)
     
     results = []
     for idx, sc in scores:
@@ -251,6 +252,7 @@ def print_welcome():
     print("╠════════════════════════════════════════╣")
     print("  输入问题按回车 → 检索 + LLM 回答")
     print("  输入 /debug → 只看检索结果")
+    print("  输入 /mode  → 切换 hybrid/bm25_only")
     print("  输入 /exit  → 退出")
     print("╚════════════════════════════════════════╝")
     print()
@@ -263,7 +265,7 @@ def main():
 
     print("Loading...")
     entries = load_kb()
-    bm25 = build_or_load_bm25(entries)
+    retriever = build_or_load_hybrid(entries)
     debug_mode = False
     print_welcome()
 
@@ -281,10 +283,19 @@ def main():
             debug_mode = not debug_mode
             print(f"  Debug: {'ON' if debug_mode else 'OFF'}")
             continue
+        if raw in ("/mode",):
+            # 切换混合/BM25-only 模式
+            if hasattr(retriever, '_vector_enabled'):
+                retriever._vector_enabled = not retriever._vector_enabled
+                mode = "hybrid" if retriever._vector_enabled else "bm25_only"
+                print(f"  Mode: {mode}")
+            else:
+                print("  Mode toggle not available")
+            continue
 
         print("  Searching...", end=" ")
         t0 = time.time()
-        scores = bm25.search(raw, top_k=TOP_K)
+        scores = retriever.search(raw, top_k=TOP_K)
         print(f"({time.time()-t0:.2f}s) {len(scores)} results")
 
         if not scores:
