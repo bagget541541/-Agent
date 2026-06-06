@@ -594,7 +594,7 @@ def contents_to_items(contents: list) -> list:
                     "title": h2_title,
                     "bank": bank,
                     "url": url,
-                    "raw_text": raw_text[:1000],
+                    "raw_text": raw_text[:3000],
                     "structured": extract_structured_fields(content_lines),
                     "highlight_summary": "",
                     "images": resolve_image_paths(h2, content),
@@ -650,7 +650,8 @@ def llm_merge(items: list, sources: list) -> dict:
       "bank": "银行名",
       "url": "原文链接（如有）",
       "structured": {},
-      "highlight_summary": "一句话亮点摘要"
+      "highlight_summary": "一句话亮点摘要",
+      "original_indices": [0, 10]
     }
   ],
   "stats": {
@@ -666,6 +667,7 @@ def llm_merge(items: list, sources: list) -> dict:
 - 只合并真正重复的条目（同一事项的不同来源报道）
 - 如果两篇报道了同一事项但内容互补，选择信息更完整的一条
 - 每个 item 的 structured 字段可以为空对象 {}
+- original_indices: 必填，列出该条目对应的原始索引号（未合并的也必须填，如 [3]）
 
 给定的条目索引映射：
 """ + "\n".join(items_summary)
@@ -704,19 +706,41 @@ def llm_merge(items: list, sources: list) -> dict:
         # 将 LLM 输出的 items 映射回完整结构
         final_items = []
         for li in llm_items:
-            # 查找原始 item 以补充 structured/images 等字段
-            original = _find_original_item(li, items)
+            # 通过 original_indices 找到所有原始条目
+            orig_indices = li.get("original_indices", [])
+            originals = []
+            if orig_indices:
+                for idx in orig_indices:
+                    if 0 <= idx < len(items):
+                        originals.append(items[idx])
+            # fallback: 用标题匹配找
+            if not originals:
+                orig = _find_original_item(li, items)
+                if orig:
+                    originals = [orig]
+
+            # 合并所有原始条目的 raw_text / structured / images
+            merged_raw = "\n".join(o.get("raw_text", "") for o in originals if o.get("raw_text"))
+            merged_structured = {}
+            for o in originals:
+                for k, v in (o.get("structured") or {}).items():
+                    if v and k not in merged_structured:
+                        merged_structured[k] = v
+            merged_images = []
+            for o in originals:
+                merged_images.extend(o.get("images", []))
+            source_file = originals[0].get("_source_file", "") if originals else ""
 
             item = {
                 "category": li.get("category", "其他"),
                 "title": li.get("title", ""),
                 "bank": li.get("bank", ""),
-                "url": li.get("url", "") or (original.get("url", "") if original else ""),
-                "raw_text": (original.get("raw_text", "") if original else ""),
-                "structured": li.get("structured", {}) or (original.get("structured", {}) if original else {}),
+                "url": li.get("url", "") or (originals[0].get("url", "") if originals else ""),
+                "raw_text": merged_raw or (originals[0].get("raw_text", "") if originals else ""),
+                "structured": li.get("structured", {}) or merged_structured,
                 "highlight_summary": li.get("highlight_summary", ""),
-                "images": (original.get("images", []) if original else []),
-                "_source_file": (original.get("_source_file", "") if original else ""),
+                "images": merged_images,
+                "_source_file": source_file,
             }
             final_items.append(item)
 
@@ -744,19 +768,28 @@ def _find_original_item(llm_item: dict, original_items: list):
     llm_title = llm_item.get("title", "").strip()
     llm_bank = llm_item.get("bank", "").strip()
 
+    # 1. 精确匹配 title+bank
     for orig in original_items:
         if orig.get("title", "").strip() == llm_title and orig.get("bank", "").strip() == llm_bank:
             return orig
 
-    # 退化：仅 title 匹配
+    # 2. 仅 title 精确匹配
     for orig in original_items:
         if orig.get("title", "").strip() == llm_title:
             return orig
 
-    # 退化：标题相似度匹配
+    # 3. 标题相似度匹配（阈值 0.6，容忍 LLM 微调标题）
     for orig in original_items:
-        if _title_similarity(orig.get("title", ""), llm_title) >= 0.85:
+        if _title_similarity(orig.get("title", ""), llm_title) >= 0.6:
             return orig
+
+    # 4. bank 匹配 + 标题包含关系（LLM 可能缩短标题）
+    if llm_bank:
+        for orig in original_items:
+            if orig.get("bank", "").strip() == llm_bank:
+                orig_title = orig.get("title", "")
+                if llm_title in orig_title or orig_title in llm_title:
+                    return orig
 
     return None
 
@@ -911,27 +944,24 @@ def generate_holistic_suggestion(merged: dict) -> dict:
 }}
 ```"""
 
-            import requests as req
-            resp = req.post(
-                f"{api_base.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.3,
-                    "max_tokens": 2048,
-                },
-                timeout=90,
+            from common.llm_client import call_llm_simple
+            reply, llm_error = call_llm_simple(
+                "", prompt,
+                temperature=0.3, max_tokens=2048, timeout=120,
             )
-            resp.raise_for_status()
-            reply = resp.json()["choices"][0]["message"]["content"]
+            if llm_error or not reply:
+                print(f"  [Warn] 建议 LLM 调用失败: {llm_error}")
+                return _keyword_holistic_suggestion(full_text)
 
             # 解析 JSON
             m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", reply, re.DOTALL)
-            json_text = m.group(1) if m else reply
+            json_text = m.group(1).strip() if m else reply.strip()
+
+            # 如果 code block 提取失败，尝试直接提取 JSON 对象
+            if not json_text or not json_text.startswith("{"):
+                m2 = re.search(r"\{[\s\S]*\}", reply)
+                if m2:
+                    json_text = m2.group()
 
             # 尝试多种方式解析 JSON
             overall = None

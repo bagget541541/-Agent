@@ -304,7 +304,7 @@ def generate_report(input_path: str, output_path: str,
                       ('变更内容', '变更内容'), ('变更分析', '分析')],
         '活动':     [('活动内容', '活动内容'), ('活动时间', '时间'), ('适用人群', '适用人群')],
         '公告':     [('消息内容', '消息'), ('点评', '点评')],
-        '其他':     [('详细内容', '详细内容')],
+        '其他':     [('消息内容', '消息内容'), ('详细内容', '详细内容')],
     }
 
     for cat in cat_order:
@@ -357,6 +357,18 @@ def generate_report(input_path: str, output_path: str,
                     value_run = p.add_run(clean_xml_text(val))
                     set_run_font(value_run, size=Pt(10.5))
                 doc.add_paragraph()  # 字段组后空行
+            elif raw_text:
+                # 兜底：结构化字段无匹配时，直接渲染 raw_text
+                for para_text in raw_text.split('\n'):
+                    para_text = para_text.strip()
+                    if not para_text:
+                        continue
+                    p = doc.add_paragraph()
+                    p.paragraph_format.space_after = Pt(2)
+                    p.paragraph_format.space_before = Pt(1)
+                    run = p.add_run(clean_xml_text(para_text))
+                    set_run_font(run, size=Pt(10.5))
+                doc.add_paragraph()
 
             # ── 图片嵌入（插入在结构化字段与详细内容之间） ──
             if add_images and images:
