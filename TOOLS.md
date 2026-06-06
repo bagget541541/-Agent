@@ -35,6 +35,10 @@ AIGC:
   - ⚠️ **Pillow 不可注释：** `requirements.txt` 中注释掉 Pillow → `from PIL import Image` 抛出 ImportError，报错不直观。Pillow 是图片处理的底层依赖，必须常驻
 - **news-analyzer：** 流程：提取内容→提炼要点+点评→生成JSON→生成文档；提取失败改用fetch_web；从项目根目录运行
 - **搜索知识库存档查询（rag_query）：** 支持 BM25 / LLM 两种检索模式；在 `merge_docs.py` 中持卡建议环节自动调用补充上下文
+- **merge_docs.py（v0.19 LLM 智能合并）：** 流程 read_docx → contents_to_items → llm_merge → JSON → generate_report.py → Word
+  - LLM 合并：groq 优先，403 时自动 fallback 到 mimo（`~/.llm_config.json`）
+  - ⚠️ **mimo-v2.5 是推理模型**，content 为空，必须用 `mimo-v2-pro`
+  - ⚠️ **编辑公共模块后清 pycache**：`find common/__pycache__ -name "llm_client*" -delete`
   - ⚠️ **路径配置 DRY 教训：** 新模块应优先从 `common.config` 导入已定义的常量（如 `DATA_DIR`、`DEFAULT_IMAGES_DIR`），不应本地重算 `os.path.dirname(__file__)` + `os.path.join`。修复：`src/rag_query.py` 改用 `from common.config import DATA_DIR`
 - **硬编码常量去重：** 常量和白名单列表（如银行名、公众号名）应检查有无重复项。`common/llm_review.py` 的 BANKS 列表存在交行、浦发各出现两次的 bug，导致 LLM 审核输出中对同一银行给出重复分析。修复：Python `set()` 去重或人工检查
 - **website-monitor：** 监控网站变化，配合fetch_web提取整理

@@ -3,11 +3,19 @@
 """
 多Word文档整合 + 持卡建议生成
 
-模式B核心脚本：
+模式B核心脚本（LLM 智能合并版）：
 1. 读取多个Word文档
-2. 提取内容并整合
-3. 生成持卡建议
-4. 输出整合后的Word文档
+2. 提取 H1/H2 结构，转为标准 JSON items
+3. LLM 智能合并（去重 + 整合 + 分类 + 摘要）
+4. 生成持卡建议
+5. 调用 word-merger/generate_report.py 输出最终 Word
+
+新流程：
+  多份 Word → read_docx_content() 提取 H1/H2 结构
+    → 转为标准 JSON items 格式
+    → LLM 智能合并（去重 + 整合 + 综合分析）
+    → 输出标准 JSON (CreditCardBatch)
+    → word-merger/generate_report.py → 最终 Word
 """
 
 import json
@@ -15,6 +23,7 @@ import os
 import re
 import sys
 import hashlib
+import subprocess
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +37,11 @@ except Exception:
     IMAGE_WIDTH_CM = 13
 
 from common.config import KNOWN_FIELD_NAMES
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Word 解析（保留原有三种解析模式）
+# ═══════════════════════════════════════════════════════════════
 
 
 def _detect_parse_mode(doc) -> str:
@@ -66,7 +80,11 @@ def _detect_parse_mode(doc) -> str:
                         break
 
     # 模式切换逻辑
-    if h1_count == 0 and h2_count > 0:
+    # 有 H1 → 始终 standard（H1 结构优先于字段检测）
+    if h1_count > 0:
+        return "standard"
+
+    if h2_count > 0:
         return "announcement"
 
     if total_para_count > 0 and bold_field_count / total_para_count > 0.2:
@@ -440,95 +458,389 @@ def _title_similarity(t1: str, t2: str) -> float:
     return len(intersection) / len(union)
 
 
-def merge_contents(contents: list) -> dict:
-    """
-    整合多个文档内容，保留层级结构，支持标题相似度去重
-
-    去重策略（Phase 4）：
-    - 两篇文章标题相似度 ≥ 0.85：保留内容更完整的一篇，丢弃重复
-    - 同一银行 + 同一条公告：合并 key 信息，去除冗余
-    """
-    merged = {
-        "title": "信用卡周报（整合版）",
-        "generated_at": datetime.now().isoformat(),
-        "sources": [],
-        "h1_sections": [],  # Heading 1 级别的大分类
-        "all_images": {},   # 所有图片数据
-        "items": []
-    }
-
-    for content in contents:
-        merged["sources"].append(Path(content["file"]).name)
-
-        # 合并图片
-        merged["all_images"].update(content.get("images_map", {}))
-
-        # 合并 h1 层级
-        for h1 in content.get("h1_sections", []):
-            # 检查是否已存在同名或相似标题的 h1
-            existing_h1 = None
-            for s in merged["h1_sections"]:
-                if s["title"] == h1["title"] or _title_similarity(s["title"], h1["title"]) >= 0.85:
-                    existing_h1 = s
-                    break
-
-            if existing_h1:
-                # 合并 h2 条目（带标题相似度去重）
-                for new_h2 in h1.get("h2_items", []):
-                    dup_h2 = None
-                    for existing_h2 in existing_h1["h2_items"]:
-                        if existing_h2["title"] == new_h2["title"] or _title_similarity(existing_h2["title"], new_h2["title"]) >= 0.85:
-                            # 找到重复 H2，保留内容更完整的一篇
-                            existing_len = len("\n".join(existing_h2.get("content", []))) + len(existing_h2.get("url", ""))
-                            new_len = len("\n".join(new_h2.get("content", []))) + len(new_h2.get("url", ""))
-                            if new_len > existing_len:
-                                # 新条目内容更完整，替换
-                                existing_h1["h2_items"].remove(existing_h2)
-                                existing_h1["h2_items"].append(new_h2)
-                            dup_h2 = True
-                            break
-                    if not dup_h2:
-                        existing_h1["h2_items"].append(new_h2)
-                existing_h1["content"].extend(h1.get("content", []))
-            else:
-                merged["h1_sections"].append(h1)
-
-    return merged
+# ═══════════════════════════════════════════════════════════════
+#  contents_to_items — H1/H2 结构 → 标准 JSON items
+# ═══════════════════════════════════════════════════════════════
 
 
-def extract_items_for_analysis(merged: dict) -> list:
-    """从整合内容中提取待分析的条目（使用层级结构）"""
+# H1 标题 → 标准分类映射
+_H1_CATEGORY_MAP = {
+    "新卡": "新卡", "新卡资讯": "新卡", "新卡发布": "新卡", "新卡推荐": "新卡",
+    "权益变更": "权益变更", "权益调整": "权益变更", "权益变化": "权益变更",
+    "活动": "活动", "优惠活动": "活动", "银行活动": "活动", "热门活动": "活动",
+    "公告": "公告", "银行公告": "公告", "通知": "公告", "重要公告": "公告",
+    "其他": "其他",
+}
+
+
+def categorize_h1(h1_title: str) -> str:
+    """将 H1 标题映射到标准分类"""
+    for key, cat in _H1_CATEGORY_MAP.items():
+        if key in h1_title:
+            return cat
+    return "其他"
+
+
+# 银行名正则
+_BANK_RE = re.compile(
+    r'(农业银行|工商银行|建设银行|招商银行|中国银行|交通银行|'
+    r'浦发银行|中信银行|光大银行|民生银行|华夏银行|兴业银行|广发银行|'
+    r'平安银行|邮储银行|北京银行|上海银行|南京银行|宁波银行|'
+    r'江苏银行|杭州银行|秦农银行|农商银行|徽商银行|浙商银行|'
+    r'渤海银行|恒丰银行|'
+    r'农行|工行|建行|招行|中行|交行|'
+    r'浦发|中信|光大|民生|华夏|兴业|广发|平安|邮储)'
+)
+
+
+def extract_bank_from_content(h1_title: str, content_lines: list) -> str:
+    """从 H1 标题或 content 中提取银行名"""
+    # 优先从 H1 标题提取
+    m = _BANK_RE.search(h1_title)
+    if m:
+        return m.group(1)
+
+    # 从 content 文本中提取
+    text = " ".join(content_lines[:5])
+    m = _BANK_RE.search(text)
+    if m:
+        return m.group(1)
+
+    return ""
+
+
+def extract_structured_fields(content_lines: list) -> dict:
+    """从 content 文本中提取 '字段名：值' 格式的结构化字段"""
+    structured = {}
+    for line in content_lines:
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r'^(.{2,8})[：:]\s*(.+)', line)
+        if m:
+            field_name = m.group(1).strip()
+            field_value = m.group(2).strip()
+            if len(field_value) <= 200:
+                structured[field_name] = field_value
+    return structured
+
+
+def resolve_image_paths(h2: dict, content: dict) -> list:
+    """将 H2 条目的图片 RID 转为文件路径，写入磁盘供 generate_report.py 使用"""
+    images_map = content.get("images_map", {})
+    img_rids = h2.get("images", [])
+    if not img_rids or not images_map:
+        return []
+
+    # 确保临时图片目录存在
+    img_dir = PROJECT_ROOT / "data" / "images" / "merge_tmp"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    paths = []
+    for rid in img_rids:
+        img_data = images_map.get(rid)
+        if not img_data:
+            continue
+
+        # 确定扩展名
+        ext = ".png"
+        if img_data[:3] == b'\xff\xd8\xff':
+            ext = ".jpg"
+        elif img_data[:4] == b'\x89PNG':
+            ext = ".png"
+        elif img_data[:4] == b'GIF8':
+            ext = ".gif"
+        elif img_data[:4] == b'RIFF':
+            ext = ".webp"
+
+        # 用哈希命名，避免重复写入
+        img_hash = hashlib.md5(img_data).hexdigest()[:12]
+        img_file = img_dir / f"{rid}_{img_hash}{ext}"
+
+        if not img_file.exists():
+            img_file.write_bytes(img_data)
+
+        paths.append(str(img_file))
+
+    return paths
+
+
+def contents_to_items(contents: list) -> list:
+    """将 read_docx_content 输出的 H1/H2 结构转为标准 JSON items 格式"""
     items = []
+    for content in contents:
+        h1_sections = content.get("h1_sections", [])
 
-    for h1 in merged.get("h1_sections", []):
-        category = h1.get("title", "活动")
+        for h1 in h1_sections:
+            h1_title = h1.get("title", "")
+            category = categorize_h1(h1_title)
 
-        for h2 in h1.get("h2_items", []):
-            content_text = "\n".join(h2.get("content", []))
+            for h2 in h1.get("h2_items", []):
+                h2_title = h2.get("title", "").strip()
+                content_lines = h2.get("content", [])
 
-            # 尝试识别银行
-            bank = ""
-            for keyword in ["银行", "信用卡", "金融"]:
-                if keyword in h2["title"]:
-                    bank = h2["title"].split(keyword)[0] + keyword
-                    break
+                # 跳过噪音条目
+                raw_text = "\n".join(content_lines)
+                if len(raw_text.strip()) < 5:
+                    continue
+                if "以上内容为广告" in raw_text:
+                    continue
 
-            items.append({
-                "title": h2["title"],
-                "bank": bank,
-                "raw_text": content_text[:500],
-                "category": category
-            })
+                bank = extract_bank_from_content(h1_title, content_lines)
+                url = h2.get("url", "")
+
+                item = {
+                    "category": category,
+                    "title": h2_title,
+                    "bank": bank,
+                    "url": url,
+                    "raw_text": raw_text[:1000],
+                    "structured": extract_structured_fields(content_lines),
+                    "highlight_summary": "",
+                    "images": resolve_image_paths(h2, content),
+                    "_source_file": Path(content.get("file", "")).name,
+                }
+                items.append(item)
 
     return items
 
 
+# ═══════════════════════════════════════════════════════════════
+#  llm_merge — LLM 智能合并
+# ═══════════════════════════════════════════════════════════════
+
+
+def llm_merge(items: list, sources: list) -> dict:
+    """
+    LLM 智能合并：去重 + 整合 + 输出标准 JSON batch
+
+    Args:
+        items: contents_to_items 输出的标准 items 列表
+        sources: 来源文件名列表
+
+    Returns:
+        {"batch_label": "...", "items": [...], "stats": {...}}
+    """
+    if not items:
+        return {
+            "batch_label": "信用卡资讯（合并）",
+            "items": [],
+            "stats": {"total_in": 0, "total_out": 0},
+        }
+
+    # 构造 items 摘要供 LLM 消费（精简：只发 title+bank+category+source）
+    items_summary = []
+    for i, item in enumerate(items):
+        items_summary.append(f"  [{i}] {item.get('category', '')} | {item.get('bank', '')} | {item.get('title', '')} | {item.get('_source_file', '')}")
+
+    system_msg = """你是信用卡资讯合并专家。给定多份周报的资讯条目索引列表，执行去重。
+
+规则：
+- 同一银行+同一标题/高度相似标题 → 保留一条（去重）
+- 不同银行的不同活动/公告 → 保留
+- 为每条生成一句话 highlight_summary
+
+输出严格 JSON：
+```json
+{
+  "items": [
+    {
+      "category": "新卡/权益变更/活动/公告/其他",
+      "title": "条目标题",
+      "bank": "银行名",
+      "url": "原文链接（如有）",
+      "structured": {},
+      "highlight_summary": "一句话亮点摘要"
+    }
+  ],
+  "stats": {
+    "total_in": 原始条目数,
+    "total_out": 合并后条目数,
+    "merged": ["被合并的条目说明"],
+    "dropped": ["被丢弃的条目说明"]
+  }
+}
+
+注意：
+- 保留所有不同银行的不同活动/公告，不要过度合并
+- 只合并真正重复的条目（同一事项的不同来源报道）
+- 如果两篇报道了同一事项但内容互补，选择信息更完整的一条
+- 每个 item 的 structured 字段可以为空对象 {}
+
+给定的条目索引映射：
+""" + "\n".join(items_summary)
+
+    user_msg = "请合并以上资讯条目，输出严格 JSON。原始条目数: " + str(len(items))
+
+    # 尝试调用 LLM
+    from common.llm_client import call_llm_simple
+    content, error = call_llm_simple(
+        system_msg, user_msg,
+        temperature=0.3, max_tokens=16384, timeout=300,
+    )
+
+    if error or not content:
+        print(f"  [Warn] LLM merge failed ({error})，使用基础去重")
+        return _fallback_merge(items, sources)
+
+    # 解析 LLM 输出 JSON
+    try:
+        # 尝试提取 JSON 代码块
+        m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", content, re.DOTALL)
+        json_text = m.group(1).strip() if m else content.strip()
+
+        # 如果 code block 提取失败，尝试直接提取 JSON 对象
+        if not json_text or not json_text.startswith("{"):
+            m2 = re.search(r"\{[\s\S]*\}", content)
+            if m2:
+                json_text = m2.group()
+
+        result = json.loads(json_text)
+
+        # 提取 items 和 stats
+        llm_items = result.get("items", [])
+        stats = result.get("stats", {})
+
+        # 将 LLM 输出的 items 映射回完整结构
+        final_items = []
+        for li in llm_items:
+            # 查找原始 item 以补充 structured/images 等字段
+            original = _find_original_item(li, items)
+
+            item = {
+                "category": li.get("category", "其他"),
+                "title": li.get("title", ""),
+                "bank": li.get("bank", ""),
+                "url": li.get("url", "") or (original.get("url", "") if original else ""),
+                "raw_text": (original.get("raw_text", "") if original else ""),
+                "structured": li.get("structured", {}) or (original.get("structured", {}) if original else {}),
+                "highlight_summary": li.get("highlight_summary", ""),
+                "images": (original.get("images", []) if original else []),
+                "_source_file": (original.get("_source_file", "") if original else ""),
+            }
+            final_items.append(item)
+
+        batch_label = f"信用卡资讯（{len(sources)}份合并）"
+        print(f"  [LLM] {len(items)} → {len(final_items)} items (merged: {stats.get('merged', [])})")
+
+        return {
+            "batch_label": batch_label,
+            "items": final_items,
+            "stats": {
+                "total_in": len(items),
+                "total_out": len(final_items),
+                "sources": sources,
+                **stats,
+            },
+        }
+
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"  [Warn] LLM merge JSON parse failed: {e}，使用基础去重")
+        return _fallback_merge(items, sources)
+
+
+def _find_original_item(llm_item: dict, original_items: list):
+    """根据 title+bank 从原始 items 中查找匹配项，用于补充字段"""
+    llm_title = llm_item.get("title", "").strip()
+    llm_bank = llm_item.get("bank", "").strip()
+
+    for orig in original_items:
+        if orig.get("title", "").strip() == llm_title and orig.get("bank", "").strip() == llm_bank:
+            return orig
+
+    # 退化：仅 title 匹配
+    for orig in original_items:
+        if orig.get("title", "").strip() == llm_title:
+            return orig
+
+    # 退化：标题相似度匹配
+    for orig in original_items:
+        if _title_similarity(orig.get("title", ""), llm_title) >= 0.85:
+            return orig
+
+    return None
+
+
+def _fallback_merge(items: list, sources: list) -> dict:
+    """LLM 不可用时的 fallback：使用标题相似度去重"""
+    result = []
+
+    for item in items:
+        is_dup = False
+        for i, existing in enumerate(result):
+            if (_title_similarity(existing["title"], item["title"]) >= 0.85
+                    and existing.get("bank", "") == item.get("bank", "")):
+                # 保留内容更完整的
+                existing_len = len(existing.get("raw_text", ""))
+                new_len = len(item.get("raw_text", ""))
+                if new_len > existing_len:
+                    result[i] = item
+                is_dup = True
+                break
+        if not is_dup:
+            result.append(item)
+
+    # 去重统计
+    dropped_count = len(items) - len(result)
+    print(f"  [Fallback] {len(items)} → {len(result)} items (dropped {dropped_count} duplicates)")
+
+    batch_label = f"信用卡资讯（{len(sources)}份合并）"
+    return {
+        "batch_label": batch_label,
+        "items": result,
+        "stats": {
+            "total_in": len(items),
+            "total_out": len(result),
+            "sources": sources,
+            "merged": [],
+            "dropped": [f"基础去重移除 {dropped_count} 条重复"],
+        },
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+#  convert_batch_to_merged — 标准 JSON → 旧 merged dict（供建议生成）
+# ═══════════════════════════════════════════════════════════════
+
+
+def convert_batch_to_merged(batch: dict) -> dict:
+    """将标准 JSON batch 转为 generate_holistic_suggestion 所需的 merged dict"""
+    # 按 category 分组构建 h1_sections
+    categories = {}
+    for item in batch.get("items", []):
+        cat = item.get("category", "其他")
+        if cat not in categories:
+            categories[cat] = {
+                "title": cat,
+                "h2_items": [],
+                "content": []
+            }
+        h2 = {
+            "title": item.get("title", ""),
+            "content": [item.get("raw_text", "")] if item.get("raw_text") else [],
+            "images": [],
+            "url": item.get("url", ""),
+        }
+        categories[cat]["h2_items"].append(h2)
+
+    merged = {
+        "title": batch.get("batch_label", "信用卡周报（整合版）"),
+        "generated_at": datetime.now().isoformat(),
+        "sources": batch.get("stats", {}).get("sources", []),
+        "h1_sections": list(categories.values()),
+    }
+    return merged
+
+
+# ═══════════════════════════════════════════════════════════════
+#  持卡建议生成（保留原有逻辑）
+# ═══════════════════════════════════════════════════════════════
+
+
 def generate_holistic_suggestion(merged: dict) -> dict:
     """从整体汇总角度生成持卡建议（使用 LLM）"""
+    full_text = ""
     try:
-        sys.path.insert(0, str(PROJECT_ROOT / "card-holding-suggestion" / "scripts"))
-        from scorer import load_config, CONFIG_FILE, DEFAULT_API_BASE, DEFAULT_MODEL
-
         # 汇总所有内容（使用层级结构）
         full_text_parts = []
         for h1 in merged.get("h1_sections", []):
@@ -542,6 +854,9 @@ def generate_holistic_suggestion(merged: dict) -> dict:
             return {"overall": None, "items": [], "error": "内容过少，无法生成建议"}
 
         # 尝试 LLM 整体分析
+        sys.path.insert(0, str(PROJECT_ROOT / "card-holding-suggestion" / "scripts"))
+        from scorer import load_config, DEFAULT_API_BASE, DEFAULT_MODEL
+
         cfg = load_config()
         api_key = cfg.get("api_key") or os.environ.get("LLM_API_KEY", "")
         api_base = cfg.get("api_base") or os.environ.get("LLM_API_BASE", DEFAULT_API_BASE)
@@ -556,7 +871,6 @@ def generate_holistic_suggestion(merged: dict) -> dict:
             scores = bm25.search(full_text, top_k=3)
             if scores:
                 _, _, sources = rag_query.build_prompt(full_text[:200], entries, scores)
-                # sources 为列表，build_prompt 返回 (system_msg, user_msg, sources)
                 rag_context = sources
         except Exception as e:
             print(f"  [Warn] RAG query failed (proceeding without RAG context): {e}")
@@ -616,7 +930,6 @@ def generate_holistic_suggestion(merged: dict) -> dict:
             reply = resp.json()["choices"][0]["message"]["content"]
 
             # 解析 JSON
-            import re
             m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", reply, re.DOTALL)
             json_text = m.group(1) if m else reply
 
@@ -651,7 +964,7 @@ def generate_holistic_suggestion(merged: dict) -> dict:
 
     except Exception as e:
         print(f"  [警告] LLM整体分析失败: {e}")
-        return _keyword_holistic_suggestion("") if not full_text else {"overall": None, "items": [], "error": str(e)}
+        return _keyword_holistic_suggestion(full_text)
 
 
 def _keyword_holistic_suggestion(full_text: str) -> dict:
@@ -680,365 +993,128 @@ def _keyword_holistic_suggestion(full_text: str) -> dict:
     return {"overall": overall, "items": [], "generated_at": datetime.now().isoformat(), "scorer": "keyword"}
 
 
-def generate_suggestions(items: list) -> dict:
-    """生成逐条建议（保留作为补充数据）"""
-    try:
-        sys.path.insert(0, str(PROJECT_ROOT / "card-holding-suggestion" / "scripts"))
-        from scorer import score_with_llm, score_with_keywords, _activity_dimensions, DIMENSION_TEMPLATES
-
-        results = []
-        for item in items:
-            category = item.get("category", "活动")
-            dim_builder = DIMENSION_TEMPLATES.get(category, _activity_dimensions)
-            dims = dim_builder()
-            # 优先使用 LLM 评分
-            score = score_with_llm(item)
-            results.append({
-                "title": item["title"],
-                "bank": item.get("bank", ""),
-                "score": score.overall_score,
-                "roi": score.overall_roi,
-                "recommendation": score.recommendation,
-                "summary": score.summary
-            })
-
-        return {"items": results, "generated_at": datetime.now().isoformat()}
-
-    except Exception as e:
-        print(f"  [Error] Suggestion generation failed: {e}")
-        return {"items": [], "error": str(e)}
-
-
-def create_merged_docx(merged: dict, suggestions: dict, output_path: str):
-    """生成整合后的Word文档，保留层级结构和图片"""
-    try:
-        from docx import Document
-        from docx.shared import Pt, RGBColor, Inches
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
-        from io import BytesIO
-
-        doc = Document()
-
-        # 设置默认字体
-        style = doc.styles['Normal']
-        style.font.name = 'Microsoft YaHei'
-        style.font.size = Pt(10.5)
-        # 同步设置东亚字体
-        from docx.oxml.ns import qn
-        from docx.oxml import OxmlElement
-        rPr = style.element.get_or_add_rPr()
-        rFonts = rPr.find(qn('w:rFonts'))
-        if rFonts is None:
-            rFonts = OxmlElement('w:rFonts')
-            rPr.insert(0, rFonts)
-        rFonts.set(qn('w:eastAsia'), 'Microsoft YaHei')
-
-        # 标题
-        title = doc.add_heading(merged["title"], level=0)
-        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-        # 生成信息
-        sub = doc.add_paragraph()
-        sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = sub.add_run(f'生成时间: {datetime.now().strftime("%Y年%m月%d日 %H:%M")}')
-        run.font.size = Pt(9)
-        run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
-
-        # 数据来源
-        if merged.get("sources"):
-            src_para = doc.add_paragraph()
-            src_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            src_run = src_para.add_run(f'整合来源: {", ".join(merged["sources"])}')
-            src_run.font.size = Pt(9)
-            src_run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
-
-        doc.add_paragraph()
-
-        # 目录（带层级）
-        doc.add_heading('目录', level=1)
-        h1_sections = merged.get("h1_sections", [])
-        for i, h1 in enumerate(h1_sections, 1):
-            doc.add_paragraph(f'{i}. {h1["title"]}')
-            for j, h2 in enumerate(h1.get("h2_items", [])[:5], 1):
-                doc.add_paragraph(f'   {i}.{j} {h2["title"]}')
-        if suggestions.get("overall"):
-            doc.add_paragraph(f'{len(h1_sections)+1}. 持卡用卡建议')
-
-        doc.add_paragraph()
-
-        # 内容详情（带层级和图片）
-        doc.add_heading('内容详情', level=1)
-        all_images = merged.get("all_images", {})
-
-        for h1 in h1_sections:
-            doc.add_heading(h1["title"], level=2)
-
-            # h1 级别的说明内容
-            for line in h1.get("content", [])[:5]:
-                if line.strip():
-                    doc.add_paragraph(line)
-
-            # h2 级别的具体条目
-            for h2 in h1.get("h2_items", []):
-                doc.add_heading(h2["title"], level=3)
-
-                # 条目内容
-                for line in h2.get("content", [])[:15]:
-                    if line.strip():
-                        doc.add_paragraph(line)
-
-                # 插入该条目的图片
-                for img_rid in h2.get("images", []):
-                    img_data = all_images.get(img_rid)
-                    if img_data:
-                        try:
-                            from io import BytesIO
-                            from PIL import Image as PILImage
-
-                            img_stream = BytesIO(img_data)
-                            pil_img = PILImage.open(img_stream)
-                            img_width, img_height = pil_img.size
-
-                            # 计算合适的插入尺寸（最大宽度：来自 IMAGE_WIDTH_CM 常量，保持比例）
-                            max_width_inches = IMAGE_WIDTH_CM / 2.54
-                            max_height_inches = 4.0
-                            dpi = 96  # 标准 DPI
-
-                            width_inches = img_width / dpi
-                            height_inches = img_height / dpi
-
-                            # 按宽度限制缩放
-                            if width_inches > max_width_inches:
-                                scale = max_width_inches / width_inches
-                                width_inches = max_width_inches
-                                height_inches = height_inches * scale
-
-                            # 按高度限制缩放（防止纵向图片过高）
-                            if height_inches > max_height_inches:
-                                scale = max_height_inches / height_inches
-                                height_inches = max_height_inches
-                                width_inches = width_inches * scale
-
-                            img_stream.seek(0)
-                            para = doc.add_paragraph()
-                            para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            run = para.add_run()
-                            run.add_picture(img_stream, width=Inches(width_inches), height=Inches(height_inches))
-
-                        except Exception:
-                            pass  # 图片插入失败不影响文档生成
-
-        # 持卡建议（整体分析）
-        overall = suggestions.get("overall")
-        if overall:
-            doc.add_paragraph()
-            doc.add_heading('持卡用卡建议', level=1)
-
-            # 重点资讯
-            highlights = overall.get("highlights", [])
-            if highlights:
-                doc.add_heading('重点关注', level=2)
-                for h in highlights:
-                    p = doc.add_paragraph()
-                    run = p.add_run(f'[{h.get("bank", "")}] {h.get("title", "")}')
-                    run.bold = True
-                    if h.get("reason"):
-                        doc.add_paragraph(f'  原因: {h["reason"]}')
-
-            # 建议动作
-            actions = overall.get("action_items", [])
-            if actions:
-                doc.add_heading('建议动作', level=2)
-                for a in actions:
-                    p = doc.add_paragraph()
-                    priority = a.get("priority", "中")
-                    priority_mark = {"高": "!!!", "中": "!!", "低": "!"}.get(priority, "")
-                    run = p.add_run(f'[{priority}{priority_mark}] {a.get("action", "")}')
-                    run.bold = priority == "高"
-                    if a.get("detail"):
-                        doc.add_paragraph(f'  {a["detail"]}')
-
-            # 风险提示
-            risks = overall.get("risk_warnings", [])
-            if risks:
-                doc.add_heading('风险提示', level=2)
-                for r in risks:
-                    doc.add_paragraph(f'  - {r}')
-
-            # 整体策略
-            strategy = overall.get("overall_strategy", "")
-            if strategy:
-                doc.add_heading('整体策略', level=2)
-                doc.add_paragraph(strategy)
-
-            # 银行小结
-            bank_summary = overall.get("bank_summary", {})
-            if bank_summary:
-                doc.add_heading('各银行要点', level=2)
-                for bank, summary in bank_summary.items():
-                    p = doc.add_paragraph()
-                    run = p.add_run(f'{bank}: ')
-                    run.bold = True
-                    p.add_run(summary)
-
-        # 保存
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        doc.save(output_path)
-        return True
-
-    except Exception as e:
-        print(f"  [Failed] Generation failed: {e}")
-        return False
+# ═══════════════════════════════════════════════════════════════
+#  主函数 — 新流程
+# ═══════════════════════════════════════════════════════════════
 
 
 def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(description='多Word文档整合')
-    parser.add_argument('--input', nargs='+', required=True, help='输入docx文件列表')
-    parser.add_argument('--output', default='', help='输出文件路径')
+    """主函数 — LLM 智能合并 + word-merger 生成 Word"""
+    parser = argparse.ArgumentParser(description='多Word文档整合（LLM 智能合并）')
+    parser.add_argument('--input', nargs='+', required=True, help='输入 docx 文件列表')
+    parser.add_argument('--output', default='', help='输出文件路径（.docx）')
     parser.add_argument('--skip-analysis', action='store_true',
-                        help='跳过持卡分析，仅输出结构化 JSON + Markdown')
+                        help='跳过持卡分析，仅输出 JSON + Markdown')
+    parser.add_argument('--skip-images', action='store_true',
+                        help='不嵌入图片到最终 Word')
 
     args = parser.parse_args()
 
-    print("="*60)
-    print("  Multi-Document Merge" + ("" if args.skip_analysis else " + Card Holding Suggestions"))
-    print("="*60)
+    print("=" * 60)
+    print("  Multi-Document Merge (LLM Smart)" + ("" if args.skip_analysis else " + Card Suggestions"))
+    print("=" * 60)
 
-    # 1. Read all documents
-    print("\n[Read Documents]")
+    # ── 1. 读取所有文档 ──────────────────────────────────────
+    print("\n[1/5] 读取文档...")
     contents = []
     for path in args.input:
         content = read_docx_content(path)
-        h1_count = len(content.get('h1_sections', []))
-        h2_count = sum(len(s.get('h2_items', [])) for s in content.get('h1_sections', []))
-        img_count = len(content.get('images_map', {}))
+        h1_count = len(content.get("h1_sections", []))
+        h2_count = sum(len(s.get("h2_items", [])) for s in content.get("h1_sections", []))
+        img_count = len(content.get("images_map", {}))
         contents.append(content)
         print(f"  OK {Path(path).name}: {h1_count} categories, {h2_count} items, {img_count} images")
 
-    # 2. Merge
-    print("\n[Merge] Merging content...")
-    merged = merge_contents(contents)
-    h1_count = len(merged.get('h1_sections', []))
-    h2_count = sum(len(s.get('h2_items', [])) for s in merged.get('h1_sections', []))
-    print(f"  Merged: {h1_count} categories, {h2_count} items")
+    # ── 2. 转为标准 JSON items ──────────────────────────────
+    print("\n[2/5] 提取结构化条目...")
+    items = contents_to_items(contents)
+    sources = [Path(c["file"]).name for c in contents]
+    print(f"  提取 {len(items)} 条来自 {len(sources)} 份文档")
 
-    if args.skip_analysis:
-        # Phase 2: 跳过持卡分析，直接输出 JSON + MD
-        print("\n[Skip Analysis] --skip-analysis 已启用，跳过持卡分析")
+    # ── 3. LLM 智能合并 ────────────────────────────────────
+    print("\n[3/5] LLM 智能合并...")
+    merged_batch = llm_merge(items, sources)
 
-        if not args.output:
-            week_label = f"{datetime.now().year}年{datetime.now().month}月第{(datetime.now().day + datetime.now().replace(day=1).weekday()) // 7 + 1}周"
-            base_name = str(PROJECT_ROOT / "data" / f"Merged_Report_{week_label}")
-        else:
-            base_name = args.output.replace('.docx', '')
-
-        # 输出 JSON（带完整结构化信息）
-        hierarchy = []
-        for h1 in merged.get("h1_sections", []):
-            h1_data = {"title": h1["title"], "h2_items": []}
-            for h2 in h1.get("h2_items", []):
-                h1_data["h2_items"].append({
-                    "title": h2["title"],
-                    "content": h2.get("content", []),
-                    "url": h2.get("url", ""),
-                    "metadata": h2.get("metadata", {}),
-                    "image_count": len(h2.get("images", []))
-                })
-            hierarchy.append(h1_data)
-
-        json_output = base_name + ".json"
-        with open(json_output, 'w', encoding='utf-8') as f:
-            json.dump({
-                "merged": {
-                    "title": merged["title"],
-                    "generated_at": merged["generated_at"],
-                    "sources": merged["sources"],
-                    "hierarchy": hierarchy,
-                    "all_images": {k: f"[image {len(v)} bytes]" for k, v in merged.get("all_images", {}).items()}
-                }
-            }, f, ensure_ascii=False, indent=2)
-        print(f"[Output] JSON: {Path(json_output).name}")
-
-        # 输出 Markdown 预览
-        md_output = base_name + ".md"
-        with open(md_output, 'w', encoding='utf-8') as f:
-            f.write(f"# {merged['title']}\n\n")
-            f.write(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
-            f.write(f"**来源**: {', '.join(merged['sources'])}\n\n")
-            f.write("---\n\n")
-            for h1 in merged.get("h1_sections", []):
-                f.write(f"## {h1['title']}\n\n")
-                for line in h1.get("content", []):
-                    if line.strip():
-                        f.write(f"{line}\n\n")
-                for h2 in h1.get("h2_items", []):
-                    f.write(f"### {h2['title']}\n\n")
-                    for line in h2.get("content", []):
-                        if line.strip():
-                            f.write(f"{line}\n\n")
-                    if h2.get("url"):
-                        f.write(f"🔗 原文链接: {h2['url']}\n\n")
-                    for img_rid in h2.get("images", []):
-                        f.write(f"![image](all_images/{img_rid})\n\n")
-            f.write("---\n\n")
-            f.write(f"*由 Credit Card Weekly Report - Mode B 生成*\n")
-        print(f"[Output] Markdown: {Path(md_output).name}")
-        print(f"\n[Success] Skip-analysis 完成，输出 JSON + MD")
-        return True
-
-    # 3. Extract items
-    items = extract_items_for_analysis(merged)
-    print(f"  Extracted: {len(items)} items")
-
-    # 4. Generate holistic suggestions (priority) + per-item suggestions (supplement)
-    print("\n[Analyze] Generating suggestions...")
-    holistic = generate_holistic_suggestion(merged)
-    print(f"  Holistic analysis: {'Success' if holistic.get('overall') else 'Fallback'}")
-
-    # Per-item suggestions as supplement (optional, skip for speed)
-    # suggestions = generate_suggestions(items)
-    suggestions = {"items": [], "overall": holistic.get("overall")}
-    print(f"  Analysis complete")
-
-    # 5. Output file
+    # ── 4. 写入标准 JSON ────────────────────────────────────
     if not args.output:
-        week_label = f"{datetime.now().year}年{datetime.now().month}月第{(datetime.now().day + datetime.now().replace(day=1).weekday()) // 7 + 1}周"
+        now = datetime.now()
+        week_num = (now.day + now.replace(day=1).weekday()) // 7 + 1
+        week_label = f"{now.year}年{now.month:02d}月第{week_num}周"
         args.output = str(PROJECT_ROOT / "data" / f"Merged_Report_{week_label}.docx")
 
-    print(f"\n[Generate] Generating document: {Path(args.output).name}")
-    success = create_merged_docx(merged, suggestions, args.output)
+    json_path = args.output.replace(".docx", ".json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(merged_batch, f, ensure_ascii=False, indent=2)
+    print(f"  JSON: {Path(json_path).name}")
 
-    if success:
-        print(f"\n[Success] Merge complete: {args.output}")
+    # ── skip-analysis 路径：输出 JSON + MD 后结束 ───────────
+    if args.skip_analysis:
+        print("\n[Skip Analysis] --skip-analysis 已启用，跳过持卡分析与 Word 生成")
+        # 输出 Markdown 预览
+        md_path = args.output.replace(".docx", ".md")
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(f"# {merged_batch.get('batch_label', '信用卡周报')}\n\n")
+            f.write(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
+            f.write(f"**来源**: {', '.join(sources)}\n\n")
+            f.write("---\n\n")
+            for item in merged_batch.get("items", []):
+                cat = item.get("category", "")
+                title = item.get("title", "")
+                bank = item.get("bank", "")
+                f.write(f"## [{cat}] {title}\n\n")
+                if bank:
+                    f.write(f"**银行**: {bank}\n\n")
+                summary = item.get("highlight_summary", "")
+                if summary:
+                    f.write(f"> {summary}\n\n")
+                raw = item.get("raw_text", "")
+                if raw:
+                    for line in raw.split("\n")[:10]:
+                        if line.strip():
+                            f.write(f"{line}\n\n")
+                if item.get("url"):
+                    f.write(f"原文链接: {item['url']}\n\n")
+                f.write("---\n\n")
+            f.write(f"*由 merge_docs.py (LLM Smart) 生成*\n")
+        print(f"  MD:   {Path(md_path).name}")
+        print(f"\n[Success] Skip-analysis 完成")
+        return True
 
-        # Also output JSON data
-        json_output = args.output.replace('.docx', '.json')
-        # Build hierarchy summary (without full content and image data)
-        hierarchy = []
-        for h1 in merged.get("h1_sections", []):
-            h1_data = {"title": h1["title"], "h2_items": []}
-            for h2 in h1.get("h2_items", []):
-                h1_data["h2_items"].append({
-                    "title": h2["title"],
-                    "content_preview": h2.get("content", [])[:2],
-                    "image_count": len(h2.get("images", []))
-                })
-            hierarchy.append(h1_data)
+    # ── 5a. 调用 word-merger/generate_report.py 生成 Word ───
+    print(f"\n[4/5] 生成 Word: {Path(args.output).name}")
+    generate_report_script = PROJECT_ROOT / "word-merger" / "scripts" / "generate_report.py"
+    cmd = [sys.executable, "-X", "utf8", str(generate_report_script),
+           "--input", json_path, "--output", args.output]
+    if args.skip_images:
+        cmd.append("--no-images")
+    if merged_batch.get("batch_label"):
+        cmd.extend(["--title", merged_batch["batch_label"]])
 
-        with open(json_output, 'w', encoding='utf-8') as f:
-            json.dump({
-                "merged": {
-                    "title": merged["title"],
-                    "sources": merged["sources"],
-                    "hierarchy": hierarchy
-                },
-                "suggestions": suggestions
-            }, f, ensure_ascii=False, indent=2)
-        print(f"[Data] JSON file: {Path(json_output).name}")
-    else:
-        print("\n[Failed] Merge failed")
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        print(f"  [Error] generate_report.py 失败:\n{result.stderr}")
         sys.exit(1)
+    print(f"  Word 生成成功")
+
+    # ── 5b. 生成持卡建议（可选） ─────────────────────────────
+    print(f"\n[5/5] 生成持卡建议...")
+    merged_for_suggestion = convert_batch_to_merged(merged_batch)
+    suggestions = generate_holistic_suggestion(merged_for_suggestion)
+    print(f"  建议: {'成功' if suggestions.get('overall') else '降级到关键词'}")
+
+    # 将建议追加到 JSON
+    merged_batch["suggestions"] = suggestions
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(merged_batch, f, ensure_ascii=False, indent=2)
+    print(f"  JSON 已更新（含建议）")
+
+    print(f"\n{'=' * 60}")
+    print(f"  完成！")
+    print(f"  Word: {args.output}")
+    print(f"  JSON: {json_path}")
+    print(f"{'=' * 60}")
+
+    return True
 
 
 if __name__ == "__main__":

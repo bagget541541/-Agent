@@ -63,6 +63,14 @@ _ENV_PROVIDERS = {
         "default_model": "llama-3.3-70b-versatile",
         "key_error": "未设置 GROQ_API_KEY 环境变量",
     },
+    "mimo": {
+        "api_key_var": "MIMO_API_KEY",
+        "model_var": "MIMO_MODEL",
+        "url_var": "MIMO_API_URL",
+        "default_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
+        "default_model": "mimo-v2-pro",
+        "key_error": "未设置 MIMO_API_KEY 环境变量",
+    },
     "grok": {
         "api_key_var": "GROK_API_KEY",
         "model_var": "GROK_MODEL",
@@ -126,18 +134,33 @@ _load_dotenv()
 # ── 统一配置加载 ─────────────────────────────────────
 
 def _get_provider_config(provider: str = None) -> dict:
-    """从环境变量解析 provider 配置，返回 {'api_key', 'model', 'url'}。"""
+    """从环境变量解析 provider 配置，返回 {'api_key', 'model', 'url'}。
+
+    环境变量未设时，回退读取 ~/.llm_config.json（兼容 mimo 等文件配置场景）。
+    """
     provider = provider or os.environ.get("LLM_PROVIDER", "groq").lower()
 
     cfg = _ENV_PROVIDERS.get(provider, _ENV_PROVIDERS["openrouter"])
     api_key = os.environ.get(cfg["api_key_var"], "")
 
     if cfg.get("url_var"):
-        url = os.environ.get(cfg["url_var"], cfg["default_url"])
+        url = os.environ.get(cfg["url_var"], cfg.get("default_url", ""))
     else:
         url = cfg["url"]
 
     model = os.environ.get(cfg["model_var"], cfg["default_model"])
+
+    # 环境变量未设 → 回退读 ~/.llm_config.json
+    if not api_key:
+        file_cfg = _load_file_config()
+        if file_cfg:
+            api_key = file_cfg.get("api_key", "")
+            if not url or url == cfg.get("default_url", ""):
+                url = file_cfg.get("api_base", "")
+                if url and not url.endswith("/chat/completions"):
+                    url = url.rstrip("/") + "/chat/completions"
+            if not model or model == cfg["default_model"]:
+                model = file_cfg.get("model", "") or model
 
     return {
         "api_key": api_key,
@@ -178,7 +201,7 @@ class LlmClient:
     """统一 LLM 客户端。
 
     Args:
-        provider: 环境变量模式下的 provider 名称 ("groq" / "grok" / "openrouter")
+        provider: 环境变量模式下的 provider 名称 ("groq" / "mimo" / "grok" / "openrouter")
         config_source: 配置源 "env"（环境变量）或 "file"（~/.llm_config.json）
         api_key: 显式指定 API Key（最高优先级）
         api_base: 显式指定 API Base URL
@@ -344,6 +367,8 @@ def call_llm_simple(
 ) -> tuple[Optional[str], Optional[str]]:
     """简化版调用，兼容 rag_query.call_llm 的 (content, error) 签名。
 
+    自动 fallback：主 provider 失败时尝试 mimo（从 ~/.llm_config.json 读取）。
+
     Returns:
         (content, None) 成功
         (None, error_msg) 失败
@@ -352,6 +377,14 @@ def call_llm_simple(
     resp = client.call(system_msg, user_msg, temperature=temperature, max_tokens=max_tokens, timeout=timeout)
     if resp.success:
         return resp.content, None
+
+    # 主 provider 失败 → 尝试 mimo fallback（仅在当前非 mimo 时）
+    if client.provider != "mimo":
+        fallback = LlmClient(provider="mimo")
+        resp2 = fallback.call(system_msg, user_msg, temperature=temperature, max_tokens=max_tokens, timeout=max(timeout, 180))
+        if resp2.success:
+            return resp2.content, None
+
     return None, resp.error
 
 

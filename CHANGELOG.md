@@ -1,5 +1,79 @@
 # 修订记录
 
+## v0.19.0 — 2026-06-06
+
+### merge_docs.py 重构 — LLM 智能合并
+
+#### 重构: merge_docs.py — 主流程改造
+- **新流程**：read_docx → contents_to_items → llm_merge → JSON → generate_report.py → Word
+- **删除**：`merge_contents()`、`create_merged_docx()`、`extract_items_for_analysis()`、`generate_suggestions()`
+- **新增**：
+  - `contents_to_items()` — H1/H2 结构转标准 JSON items
+  - `llm_merge()` — LLM 智能合并（去重 + 分类 + highlight_summary）
+  - `_fallback_merge()` — 标题相似度去重兜底
+  - `convert_batch_to_merged()` — JSON batch 转旧 merged dict（供建议生成）
+  - 辅助函数：`categorize_h1()`、`extract_bank_from_content()`、`extract_structured_fields()`、`resolve_image_paths()`
+- **LLM 参数**：`max_tokens=16384, timeout=300`（适配 32 条合并）
+- **JSON 解析增强**：支持裸 JSON / code block / 正则提取三种容错
+
+#### 重构: common/llm_client.py — 多 Provider 支持
+- **新增 mimo provider**：`_ENV_PROVIDERS` 增加 mimo（`MIMO_API_KEY`/`MIMO_MODEL`/`MIMO_API_URL`）
+- **配置文件回退**：`_get_provider_config()` 在环境变量未设时自动读 `~/.llm_config.json`
+- **自动 fallback**：`call_llm_simple()` 主 provider 失败时自动尝试 mimo（timeout 取 max 值）
+
+#### 配置变更
+- `~/.llm_config.json` model: `mimo-v2.5` → `mimo-v2-pro`（mimo-v2.5 为推理模型，content 为空）
+
+#### 踩坑经验
+- Python pycache：编辑公共模块后需清理 `__pycache__`，否则旧字节码继续执行
+- reasoning model 不适合结构化输出：mimo-v2.5 reasoning tokens 耗尽导致 content 为空
+- prompt 精简：去重场景只发 title+bank+category，不发 raw_text，避免超时
+- provider fallback timeout 需独立设置，不能复用原始 timeout
+
+## v0.18.0 — 2026-06-05
+
+### RAG 混合检索升级
+
+#### 新增 1: common/hybrid_retriever.py — 混合检索核心模块（280 行）
+- `_EmbeddingIndex` 类：轻量级向量索引，numpy 数组 + pickle 序列化
+- `HybridRetriever` 类：BM25 + 向量检索 + RRF 融合
+- `build_or_load_hybrid()`: 构建或从缓存加载混合检索器
+- `invalidate_vector_cache()`: 删除向量缓存
+
+#### 新增 2: 本地 embedding 模型
+- 下载 `BAAI/bge-small-zh-v1.5` 到 `D:/models/bge-small-zh-v1.5/`
+- 512 维中文 embedding，适合信用卡领域检索
+
+#### 修改 1: src/rag_query.py — 集成混合检索
+- 使用 `HybridRetriever` 替代纯 BM25 检索
+- 添加 `/mode` CLI 命令，切换 hybrid/bm25_only 模式
+- 更新欢迎界面，显示混合检索状态
+
+#### 修改 2: common/config.py — 添加向量配置
+- `VECTOR_CACHE`: 向量索引缓存路径
+- `EMBEDDING_MODEL`: 默认 embedding 模型路径
+
+#### 修改 3: scripts/rag/kb_add_article.py — 添加向量缓存失效
+- KB 更新后同时删除 BM25 和向量缓存
+
+#### 修改 4: requirements.txt — 添加向量检索依赖
+- `numpy>=1.24.0`
+- `sentence-transformers>=2.2.0`
+
+#### 新增 3: tests/test_hybrid_retriever.py — 混合检索单元测试
+- 11 个测试用例，覆盖 EmbeddingIndex、HybridRetriever、缓存管理、Fallback 机制
+
+#### 技术细节
+- **RRF 融合公式**: `score(d) = bm25_w * Σ(1/(k + rank_bm25(d))) + vector_w * Σ(1/(k + rank_vector(d)))`
+- **缓存策略**: BM25 和向量索引分别缓存，KB 更新后自动失效
+- **Fallback 机制**: sentence-transformers 不可用时自动降级到 BM25-only
+
+#### 测试
+- 单元测试：10 passed, 1 skipped（集成测试因 torch 环境跳过）
+- 手动测试：390 条 KB 条目混合检索正常
+
+---
+
 ## v0.17.0 — 2026-06-13
 
 ### 修复 5 + 优化 1 + 经验沉淀 → TOOLS.md
