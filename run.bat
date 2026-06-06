@@ -9,12 +9,8 @@ echo           Credit Card Weekly Report Automation
 echo ============================================================
 echo.
 
-REM Display last run time
-if exist "data\last_run.json" (
-    python -X utf8 -c "import json; d=json.load(open('data/last_run.json','r',encoding='utf-8')); print(f'Last run: {d.get(\"last_run\",\"Never\")}')"
-) else (
-    echo Last run: Never
-)
+REM Display last run time + days ago + suggested bank_days
+python -X utf8 scripts\show_last_run.py
 echo.
 
 echo Select mode:

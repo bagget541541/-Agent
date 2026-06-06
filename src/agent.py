@@ -1321,6 +1321,21 @@ def step7_archive(batch: CreditCardBatch, report_file: str, analysis: dict) -> s
         return ""
 
 
+def _write_last_run(bank_days: int = 7):
+    """写入上次运行记录，供 run.bat 读取并提示距今天数。"""
+    last_run_path = PROJECT_ROOT / "data" / "last_run.json"
+    try:
+        data = {
+            "last_run": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "bank_days": bank_days,
+        }
+        last_run_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(last_run_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"  [Warn] 写入 last_run.json 失败: {e}")
+
+
 def run_pipeline(
     wechat_urls: list[str] = None,
     webpage_urls: list[str] = None,
@@ -1491,6 +1506,10 @@ def run_pipeline(
     )
 
     result.print_summary()
+
+    # 记录本次运行时间（供 run.bat 显示"上次运行距今X天"）
+    if not archive_only:
+        _write_last_run(bank_days)
 
     # 导出审核队列
     if batch and batch.size() > 0:
