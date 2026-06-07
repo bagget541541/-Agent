@@ -81,6 +81,12 @@ class ROI_Score:
     highlight_reason: str = ""  # 高亮原因
     notes: str = ""  # 注意事项/风险提示
     activity_value: str = ""  # 活动价值（仅活动分类使用）
+    # Phase 1: 条目结构化富字段
+    target_audience: str = ""  # 定位：一句话目标人群
+    key_benefits: list = field(default_factory=list)  # 核心权益列表
+    fee_assessment: str = ""  # 年费回报评估
+    worth_applying: list = field(default_factory=list)  # 是否值得申请 [{icon, condition, conclusion}]
+    priority_emoji: str = ""  # 优先级 emoji: 🔴🟡⚪🟢
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -162,6 +168,17 @@ def _calc_highlight(category: str, score: float, roi: str) -> tuple[bool, str]:
         if score <= 2 or score >= 9:
             return (True, "重要公告")
     return (False, "")
+
+
+def score_to_emoji(category: str, score: float, roi: str = "") -> str:
+    """将评分映射为优先级 emoji"""
+    if category == "权益变更" and score >= 7:
+        return "🟢"  # 🟢
+    if score >= 7:
+        return "🔴"  # 🔴
+    if score >= 4:
+        return "🟡"  # 🟡
+    return "⚪"  # ⚪
 
 
 def _generate_notes(category: str, overall: float, text_all: str) -> str:
@@ -280,6 +297,10 @@ def _parse_llm_response(text: str) -> ROI_Score:
         recommendation=data.get("recommendation", ""),
         dimensions=dims,
         summary=data.get("summary", ""),
+        target_audience=data.get("target_audience", ""),
+        key_benefits=data.get("key_benefits", []),
+        fee_assessment=data.get("fee_assessment", ""),
+        worth_applying=data.get("worth_applying", []),
     )
 
 
@@ -335,6 +356,7 @@ def score_with_llm(item: dict) -> ROI_Score:
 
     result = _parse_llm_response(reply)
     result.scorer_used = "llm"
+    result.priority_emoji = score_to_emoji(category, result.overall_score, result.overall_roi)
     is_hl, hl_reason = _calc_highlight(category, result.overall_score, result.overall_roi)
     result.is_highlight = is_hl
     result.highlight_reason = hl_reason
@@ -366,6 +388,10 @@ def score_with_keywords(item: dict, dims: list[dict]) -> ROI_Score:
             if kw in text_all: base += 0.5
         for kw in negative:
             if kw in text_all: base -= 2.0
+        # P1-5: structured 字段也计分
+        for kw in positive:
+            if structured.get("卡亮点", "") and kw in structured["卡亮点"]: base += 0.5
+            if structured.get("详情", "") and kw in structured["详情"]: base += 0.3
         overall = max(1, min(10, base))
         dimensions = [
             {"name": "年费成本", "weight": 0.25, "score": min(10, overall + 1), "reason": "关键词匹配"},
@@ -378,6 +404,9 @@ def score_with_keywords(item: dict, dims: list[dict]) -> ROI_Score:
         value_kw = ["返现", "满减", "立减", "免费", "多倍积分"]
         risk_kw = ["名额有限", "限量", "先到先得"]
         value_score = sum(1 for kw in value_kw if kw in text_all)
+        # P1-5: structured 字段也计分
+        for kw in value_kw:
+            if structured.get("活动内容", "") and kw in structured["活动内容"]: value_score += 1
         risk_score = sum(1 for kw in risk_kw if kw in text_all)
         overall = min(10, 4 + value_score * 1.5 - risk_score)
         overall = max(1, overall)
@@ -425,6 +454,78 @@ def score_with_keywords(item: dict, dims: list[dict]) -> ROI_Score:
 
     is_hl, hl_reason = _calc_highlight(category, overall, roi)
 
+    # Phase 1+3+fix: keyword fallback — 从 raw_text/structured 提取富字段
+    ta = ""
+    kb = []
+    fa = ""
+    wa = []
+    # 定位：P0-1 fix — 先从 structured[适用人群] 读取，再 fallback 到正则提取
+    _ta_struct = (structured.get("适用人群") or "").strip()
+    if _ta_struct and _ta_struct not in ("信用卡持卡人", "持卡人", ""):
+        ta = _ta_struct[:50]
+    if not ta:
+        m_ta = re.search(r"适用人群[：:]\s*(.+?)(?:\n|$)", text_all)
+        if m_ta:
+            ta = m_ta.group(1).strip()[:50]
+    if not ta:
+        m_ta2 = re.search(r"(?:适合|推荐给|面向)(.{3,30}?)(?:[，。；\n]|$)", text_all)
+        if m_ta2:
+            ta = m_ta2.group(1).strip()[:50]
+    # P0-1 充分：新卡类从 title 提取银行+卡名作为 fallback
+    if not ta and category == "新卡" and title:
+        _bank = item.get("bank", "")
+        ta = f"持有{_bank}信用卡的用户" if _bank else "信用卡申请人"
+    # 核心权益：匹配 bullet + “亮点/核心权益/优势”后句子分割 + structured fallback
+    m_kb = re.findall(r"[•\-\*]\s*(.{5,60}?)(?:\n|$)", raw_text)
+    if m_kb:
+        kb = [k.strip() for k in m_kb[:5]]
+    if not kb:
+        m_hl = re.search(r"(?:亮点|核心权益|优势)[：:]\s*(.+?)(?:\n\n|\Z)", raw_text, re.DOTALL)
+        if m_hl:
+            sentences = re.split(r"[。；\n]", m_hl.group(1))
+            kb = [s.strip() for s in sentences if 5 <= len(s.strip()) <= 60][:5]
+    if not kb and structured.get("卡亮点"):
+        kb = [structured["卡亮点"][:60]]
+    # P1-4 增强：从 structured[详情] 提取年费信息
+    m_fa = re.search(r"(?:^|[，。\s])年费[：:]*\s*(.{5,60}?)(?:[。\n]|$)", text_all)
+    if m_fa:
+        fa = m_fa.group(1).strip()
+    if not fa:
+        # 从 structured[详情] 提取
+        detail = (structured.get("详情") or "").strip()
+        if detail:
+            m_fa2 = re.search(r"年费[：:]*\s*(.{3,40})", detail)
+            if m_fa2:
+                fa = m_fa2.group(1).strip()
+    if not fa and "免年费" in text_all:
+        fa = "免年费，零持卡成本"
+    elif not fa and "首年免" in text_all:
+        fa = "首年免年费"
+    elif not fa and ("刷卡免" in text_all or "刷卡6次免" in text_all):
+        fa = "刷卡免年费"
+    elif not fa and "刚性年费" in text_all:
+        m_fee = re.search(r"年费[^\d]*(\d+)元", text_all)
+        if m_fee:
+            fa = f"刚性年费{m_fee.group(1)}元"
+    # P1-6: 生成简单 worth_applying
+    if category == "新卡":
+        if overall >= 7:
+            wa = [{"icon": "✅", "condition": "有该卡核心权益需求", "conclusion": "值得关注"}]
+        elif overall <= 3:
+            wa = [{"icon": "❌", "condition": "权益较鸡肋", "conclusion": "建议观望"}]
+    elif category == "活动":
+        if overall >= 7:
+            wa = [{"icon": "✅", "condition": "日常消费可叠加", "conclusion": "建议参与"}]
+        elif overall <= 3:
+            wa = [{"icon": "❌", "condition": "价值低或契约多", "conclusion": "建议放弃"}]
+    elif category == "权益变更":
+        if overall >= 7:
+            wa = [{"icon": "✅", "condition": "利好变更", "conclusion": "确认续持"}]
+        elif overall <= 3:
+            wa = [{"icon": "❌", "condition": "缩水严重", "conclusion": "建议评估是否销卡"}]
+
+    emoji = score_to_emoji(category, overall, roi)
+
     return ROI_Score(
         overall_score=round(overall, 1),
         overall_roi=roi,
@@ -435,4 +536,9 @@ def score_with_keywords(item: dict, dims: list[dict]) -> ROI_Score:
         is_highlight=is_hl,
         highlight_reason=hl_reason,
         notes=notes,
+        target_audience=ta,
+        key_benefits=kb,
+        fee_assessment=fa,
+        worth_applying=wa,
+        priority_emoji=emoji,
     )

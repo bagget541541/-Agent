@@ -99,11 +99,55 @@ def sanitize_structure(value):
     return value
 
 
-def build_report_title(items, batch_label: str = "") -> str:
-    """根据批次内容自动生成更像“亮点摘要”的标题。"""
+def build_report_title(items, batch_label: str = "", use_llm: bool = True) -> str:
+    """根据批次内容自动生成更像"亮点摘要"的标题。
+
+    Phase 2: 优先用 LLM 从 top-3 高亮条目压缩为一句话（<=50字），
+    失败时 fallback 到 keyword 拼接。
+    """
     if not isinstance(items, list):
         items = []
 
+    base = clean_xml_text(batch_label).strip() or "信用卡资讯"
+
+    # Phase 2: 按 priority_emoji 排序，取 top-3 高亮条目
+    scored = []
+    for it in items:
+        emoji = it.get("priority_emoji", "")
+        s = 0
+        if emoji == "\U0001f534": s = 3
+        elif emoji == "\U0001f7e2": s = 2
+        elif emoji == "\U0001f7e1": s = 1
+        scored.append((s, it))
+    scored.sort(key=lambda x: -x[0])
+    top3 = [it for _, it in scored[:3] if it.get("highlight_summary")]
+
+    # 尝试 LLM 压缩
+    if use_llm and top3:
+        try:
+            _project_root = os.path.join(os.path.dirname(__file__), "..", "..")
+            if _project_root not in sys.path:
+                sys.path.insert(0, _project_root)
+            from common.llm_client import call_llm_file_config
+            summaries = []
+            for it in top3:
+                bank = it.get("bank", "")
+                hs = it.get("highlight_summary", "")
+                summaries.append(f"{bank} {hs}".strip())
+            prompt = (
+                "将以下信用卡资讯压缩为一句话标题（不超过50字），"
+                "用顿号分隔各条要点，不要引号和多余文字：\n"
+                + "\n".join(f"{i+1}. {s}" for i, s in enumerate(summaries))
+            )
+            reply, err = call_llm_file_config(prompt=prompt, max_tokens=100, timeout=10)
+            if reply and not err:
+                reply = reply.strip().strip("\u201c").strip("\u201d").strip('"').strip("'")
+                if len(reply) <= 60:
+                    return f"{base}\uff5c{reply}"
+        except Exception:
+            pass  # fallback 到 keyword 拼接
+
+    # Fallback: keyword 拼接（保留原有逻辑）
     priority_map = {"新卡": 0, "权益变更": 1, "活动": 2, "公告": 3}
     candidate_items = sorted(
         items,
@@ -124,13 +168,11 @@ def build_report_title(items, batch_label: str = "") -> str:
         if len(titles) >= 2:
             break
 
-    base = clean_xml_text(batch_label).strip() or "信用卡资讯"
     if not titles:
         return f"{base}周报"
     if len(titles) == 1:
         return f"{base}亮点：{titles[0]}"
     return f"{base}亮点：{titles[0]}、{titles[1]}"
-
 
 setup_docx = setup_docx_cached
 
@@ -250,90 +292,50 @@ def generate_report(input_path: str, output_path: str,
 
     doc.add_paragraph()  # 留白
 
-    # ============ 目录（TOC 字段） ============
+    # ============ Phase 1: 手写风格目录（带 emoji + 摘要） ============
+    # 需要先构建 cat_order 和 cat_config（提前定义供目录和正文共用）
+    cat_order = ['新卡', '权益变更', '活动', '公告']  # P0-3: 移除“其他”
+    cat_config = {
+        '新卡':       ('新卡资讯', '新卡资讯'),
+        '权益变更':   ('权益变更', '权益变更'),
+        '活动':       ('优惠活动', '优惠活动'),
+        '公告':       ('重要公告', '重要公告'),
+        '其他':       ('其他', '其他'),
+    }
     doc.add_heading('目录', level=1)
-    toc_para = doc.add_paragraph()
-    toc_run = toc_para.add_run()
-    # TOC 域代码：需要 Word 中按 Ctrl+A → F9 更新
-    fld_begin = OxmlElement('w:fldChar')
-    fld_begin.set(qn('w:fldCharType'), 'begin')
-    toc_run._r.append(fld_begin)
-    instr = OxmlElement('w:instrText')
-    instr.set(qn('xml:space'), 'preserve')
-    instr.text = ' TOC \\o "1-3" \\h \\z \\u '
-    toc_run._r.append(instr)
-    fld_sep = OxmlElement('w:fldChar')
-    fld_sep.set(qn('w:fldCharType'), 'separate')
-    toc_run._r.append(fld_sep)
-    placeholder = toc_para.add_run(clean_xml_text('[请在 Word 中按 Ctrl+A → F9 更新目录]'))
-    set_run_font(placeholder, size=Pt(9), color=RGBColor(0x99, 0x99, 0x99))
-    fld_end = OxmlElement('w:fldChar')
-    fld_end.set(qn('w:fldCharType'), 'end')
-    toc_run._r.append(fld_end)
+    for cat in cat_order:
+        cat_items = [it for it in items if it.get('category') == cat]
+        if not cat_items:
+            continue
+        cat_label, _ = cat_config.get(cat, (cat, cat))
+        cp = doc.add_paragraph()
+        cr = cp.add_run(cat_label)
+        set_run_font(cr, bold=True, size=Pt(11))
+        cp.paragraph_format.space_after = Pt(2)
+        for it in cat_items:
+            emoji = it.get('priority_emoji', '')
+            title = it.get('display_title') or it.get('title', '')
+            summary = it.get('highlight_summary', '') or ''
+            summary_short = safe_truncate(summary, 30)
+            line = f'  {emoji} {title}'
+            if summary_short:
+                line += f'：{summary_short}'
+            lp = doc.add_paragraph()
+            lp.add_run(clean_xml_text(line))
+            lp.paragraph_format.space_after = Pt(1)
     doc.add_paragraph()  # 目录后留白
 
-    # ============ 统计概览 ============
-    cat_order = ['新卡', '权益变更', '活动', '公告', '其他']
+    # ============ 统计概览（Phase 1: 简化，仅用于 cat_counts） ============
     cat_counts = {c: 0 for c in cat_order}
     for it in items:
         c = it.get('category', '')
         if c in cat_counts:
             cat_counts[c] += 1
 
-    doc.add_heading('内容概览', level=1)
-    sp = doc.add_paragraph()
-    parts = [f'{c}: {cat_counts[c]}条' for c in cat_order if cat_counts[c] > 0]
-    sr = sp.add_run('  |  '.join(parts))
-    set_run_font(sr, size=Pt(12), bold=True)
-
-    tp2 = doc.add_paragraph(clean_xml_text(f'共 {len(items)} 条资讯'))
-    tp2.paragraph_format.space_after = Pt(6)
-
-    # ============ 本期亮点 ============
-    doc.add_heading('本期亮点', level=1)
-    highlight_idx = 0
-    for it in items:
-        # P0-3: 过滤广告/其他类 → 不进入亮点
-        cat = it.get('category', '')
-        if cat == '其他':
-            continue
-        hs = (it.get('highlight_summary', '') or '').strip()
-        if '以上内容为广告' in hs:
-            continue
-        # P10: 跳过纯广告/空内容标记的条目
-        noise_flags = it.get('noise_flags') or []
-        if 'pure_ad_or_empty' in noise_flags:
-            continue
-
-        highlight_idx += 1
-        # P0-1: 优先消费标准化字段
-        bank = it.get('source_name') or it.get('bank', '')
-        # 优先从 highlight_summary，其次按分类使用合适的结构化字段，再 fallback 到 display_title/title
-        structured_for_highlight = _normalize_structured(it.get('structured') or {})
-        summary = (
-            it.get('highlight_summary')
-            or (structured_for_highlight.get('变更内容') if cat == '权益变更' else None)
-            or (structured_for_highlight.get('活动内容') if cat == '活动' else None)
-            or it.get('display_title')
-            or it.get('title', '')
-        )
-        # P16: 统一对 highlight_summary 做长度保护
-        summary = safe_truncate(summary, 80)
-        label = clean_xml_text(f'{bank} · {summary}') if bank else clean_xml_text(summary)
-        p = doc.add_paragraph(f'{highlight_idx}. {label}')
-        p.paragraph_format.space_after = Pt(2)
-        p.paragraph_format.space_before = Pt(0)
-
     # ============ 正文：按分类展示 ============
-    cat_config = {
-        '新卡':       ('🆕 新卡资讯', '新卡资讯'),
-        '权益变更':   ('🔄 权益变更', '权益变更'),
-        '活动':       ('🏷️ 优惠活动', '优惠活动'),
-        '公告':       ('📢 重要公告', '重要公告'),
-        '其他':       ('其他', '其他'),
-    }
+    # cat_config 已在目录阶段定义，此处不再重复
     structured_fields = {
-        '新卡':     [('卡种', '卡种'), ('卡亮点', '亮点'), ('适用人群', '适用人群'),
+        '新卡':     [('卡种', '卡种'), ('适用人群', '适用人群'),
                       ('来源', '来源'), ('详情', '详情')],
         '权益变更': [('消息时间', '时间'), ('影响范围', '影响范围'),
                       ('变更内容', '变更内容'), ('变更分析', '分析')],
@@ -355,6 +357,40 @@ def generate_report(input_path: str, output_path: str,
             bank = item.get('bank', '')
             # P0-2: 正文标题优先消费 display_title
             title_text = item.get('display_title') or item.get('title', '')
+            # P0-3: 清理标题中的换行、噪音和过长内容
+            title_text = title_text.replace('\n', ' ').replace('\r', '').strip()
+            # 移除"活动对象"等噪音后缀
+            for _noise in [' \u4e8c\u3001\u6d3b\u52a8\u5bf9\u8c61', '\u4e8c\u3001\u6d3b\u52a8\u5bf9\u8c61',
+                           ' \u4e09\u3001\u6d3b\u52a8\u5185\u5bb9', '\u4e09\u3001\u6d3b\u52a8\u5185\u5bb9']:
+                if _noise in title_text:
+                    title_text = title_text[:title_text.index(_noise)]
+            # 移除"农业银行活动活动："重复前缀
+            title_text = title_text.replace('\u519c\u4e1a\u94f6\u884c\u6d3b\u52a8\u6d3b\u52a8\uff1a', '')
+            # 如果标题看起来是原始内容（以日期开头或含"活动名额"），用 bank+卡名 兜底
+            import re as _re
+            if _re.match(r'^\d{4}[\u5e74/-]', title_text) or '\u6d3b\u52a8\u540d\u989d' in title_text:
+                _bank = item.get('bank', '')
+                _structured = item.get('structured_clean') or item.get('structured', {})
+                _card = _structured.get('\u5361\u79cd', '') or _structured.get('\u6d3b\u52a8\u5185\u5bb9', '')[:20]
+                if _card:
+                    title_text = f'{_bank} {_card}'.strip()
+                elif _bank:
+                    title_text = f'{_bank} {cat}\u6d3b\u52a8'
+            # 最终清理：移除尾部噪音
+            title_text = title_text.rstrip('. \u3002\uff0c\uff1b\uff1a\u3001')
+            for _tail in [' \u4e8c\u3001', '\u4e8c\u3001', ' \u4e00\u3001', '\u4e00\u3001',
+                          ' \u4e09\u3001', '\u4e09\u3001']:
+                if title_text.endswith(_tail):
+                    title_text = title_text[:-len(_tail)]
+            if len(title_text) > 50:
+                # 按标点截断
+                for _p in ['\uff1a', '\uff0c', '\u3001', '\u3002', ' ']:
+                    _idx = title_text.find(_p, 10)
+                    if 10 < _idx < 50:
+                        title_text = title_text[:_idx]
+                        break
+                else:
+                    title_text = title_text[:50] + '...' 
             url = item.get('url', '')
             raw_text = item.get('raw_text', '')
             structured = item.get('structured_clean') or item.get('structured', {})
@@ -374,7 +410,12 @@ def generate_report(input_path: str, output_path: str,
                         break
 
             # ── 条目标题 ──
-            doc.add_heading(clean_xml_text(f'{idx}. {title_text}'), level=2)
+            # Phase 1: H2 标题追加 priority_emoji
+            priority_emoji = item.get('priority_emoji', '')
+            heading_text = f'{idx}. {title_text}'
+            if priority_emoji:
+                heading_text += f' {priority_emoji}'
+            doc.add_heading(clean_xml_text(heading_text), level=2)
 
             # ── 银行标签 ──
             if bank:
@@ -382,6 +423,53 @@ def generate_report(input_path: str, output_path: str,
                 br = bp.add_run(clean_xml_text(f'【{bank}】'))
                 set_run_font(br, size=Pt(10), color=RGBColor(0xCC, 0x66, 0x00), bold=True)
                 bp.paragraph_format.space_after = Pt(2)
+
+            # ── Phase 1: 富字段渲染 ──
+            highlight = item.get('highlight_summary', '')
+            target_aud = item.get('target_audience', '')
+            benefits = item.get('key_benefits', [])
+            fee = item.get('fee_assessment', '')
+            worth = item.get('worth_applying', [])
+
+            # 亮点（加粗首行）
+            if highlight:
+                hp = doc.add_paragraph()
+                hr = hp.add_run(f'亮点：{highlight}')
+                set_run_font(hr, bold=True, size=Pt(10.5))
+                hp.paragraph_format.space_after = Pt(2)
+
+            # 定位
+            if target_aud:
+                tp = doc.add_paragraph()
+                tr = tp.add_run(f'定位：{target_aud}')
+                set_run_font(tr, bold=True, size=Pt(10.5))
+                tp.paragraph_format.space_after = Pt(2)
+
+            # 核心权益
+            if benefits:
+                for b in benefits:
+                    bp = doc.add_paragraph(style='List Bullet')
+                    bp.add_run(clean_xml_text(b))
+
+            # 年费回报评估
+            if fee:
+                fp = doc.add_paragraph()
+                fr = fp.add_run(f'年费回报评估：{fee}')
+                set_run_font(fr, bold=True, size=Pt(10.5))
+                fp.paragraph_format.space_after = Pt(2)
+
+            # 是否值得申请
+            if worth:
+                wp = doc.add_paragraph()
+                wr = wp.add_run('是否值得申请：')
+                set_run_font(wr, bold=True, size=Pt(10.5))
+                for w in worth:
+                    icon = w.get('icon', '')
+                    cond = w.get('condition', '')
+                    concl = w.get('conclusion', '')
+                    ip = doc.add_paragraph(style='List Bullet')
+                    ir = ip.add_run(f'{icon} {cond} → {concl}')
+                    set_run_font(ir, size=Pt(10.5))
 
             # ── 来源链接 ──
             if url:
@@ -391,8 +479,16 @@ def generate_report(input_path: str, output_path: str,
                 up.paragraph_format.space_after = Pt(4)
 
             # ── 结构化字段（段落文字，取代表格） ──
+            # Phase 1: 🟢 正面变更跳过"变更分析/点评"字段
             fields = structured_fields.get(cat, [])
-            visible = [(k, lb) for k, lb in fields if structured.get(k)]
+            skip_keys = set()
+            if priority_emoji == '🟢':  # 🟢
+                skip_keys = {'变更分析', '点评'}
+            visible = [(k, lb) for k, lb in fields if structured.get(k) and lb not in skip_keys]
+            # Phase 1: ⚪ 低价值活动只渲染标题+亮点，跳过详细结构化字段
+            if priority_emoji == '⚪' and cat == '活动':
+                visible = []  # 跳过详细字段
+
             if visible:
                 for key, label_name in visible:
                     val = structured.get(key, '')
@@ -417,6 +513,28 @@ def generate_report(input_path: str, output_path: str,
                     run = p.add_run(clean_xml_text(para_text))
                     set_run_font(run, size=Pt(10.5))
                 doc.add_paragraph()
+
+            # P0-3: 公告类/低价值活动 — 在图片前插入一行核心内容摘要
+            if cat == '公告':
+                # 从 structured 中提取消息内容的前 100 字
+                msg = (structured.get('消息内容') or structured.get('消息') or '')[:100]
+                if msg and msg != title_text:
+                    mp = doc.add_paragraph()
+                    mr = mp.add_run(clean_xml_text(msg))
+                    set_run_font(mr, size=Pt(10))
+                    mp.paragraph_format.space_after = Pt(4)
+            elif structured.get('_low_value'):
+                # 低价值活动：只显示活动时间和一句话摘要
+                act_time = structured.get('活动时间') or structured.get('时间') or ''
+                if act_time:
+                    tp = doc.add_paragraph()
+                    tr = tp.add_run(f'活动时间：{act_time}')
+                    set_run_font(tr, size=Pt(10))
+                act_content = (structured.get('活动内容') or '')[:80]
+                if act_content:
+                    ap = doc.add_paragraph()
+                    ar = ap.add_run(clean_xml_text(act_content))
+                    set_run_font(ar, size=Pt(10))
 
             # ── 图片嵌入（插入在结构化字段与详细内容之间） ──
             if add_images and images:

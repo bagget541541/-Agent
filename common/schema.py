@@ -148,6 +148,12 @@ class CreditCardItem:
         is_multi_topic_split: bool = False,
         topic_split_confidence: float = 0.0,
         topic_split_signals: Optional[list[str]] = None,
+        # Phase 1: 条目结构化富字段
+        target_audience: str = "",
+        key_benefits: Optional[list[str]] = None,
+        fee_assessment: str = "",
+        worth_applying: Optional[list[dict]] = None,
+        priority_emoji: str = "",
     ):
         self.source = source
         self.source_type = source_type or _auto_source_type(source)
@@ -184,6 +190,12 @@ class CreditCardItem:
         self.is_multi_topic_split = is_multi_topic_split
         self.topic_split_confidence = topic_split_confidence
         self.topic_split_signals = topic_split_signals or []
+        # Phase 1: 条目结构化富字段
+        self.target_audience = target_audience
+        self.key_benefits = key_benefits or []
+        self.fee_assessment = fee_assessment
+        self.worth_applying = worth_applying or []
+        self.priority_emoji = priority_emoji
 
     # ── 序列化 ────────────────────────────────────────
 
@@ -223,6 +235,11 @@ class CreditCardItem:
             "is_multi_topic_split": self.is_multi_topic_split,
             "topic_split_confidence": self.topic_split_confidence,
             "topic_split_signals": self.topic_split_signals,
+            "target_audience": self.target_audience,
+            "key_benefits": self.key_benefits,
+            "fee_assessment": self.fee_assessment,
+            "worth_applying": self.worth_applying,
+            "priority_emoji": self.priority_emoji,
         }
 
     @classmethod
@@ -262,6 +279,11 @@ class CreditCardItem:
             is_multi_topic_split=d.get("is_multi_topic_split", False),
             topic_split_confidence=d.get("topic_split_confidence", 0.0),
             topic_split_signals=d.get("topic_split_signals"),
+            target_audience=d.get("target_audience", ""),
+            key_benefits=d.get("key_benefits"),
+            fee_assessment=d.get("fee_assessment", ""),
+            worth_applying=d.get("worth_applying"),
+            priority_emoji=d.get("priority_emoji", ""),
         )
 
     def __repr__(self) -> str:

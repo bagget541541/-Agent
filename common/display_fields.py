@@ -246,6 +246,8 @@ def generate_display_fields(
     raw_title: str,
     raw_text: str = "",
     structured_clean: dict | None = None,
+    key_benefits: list | None = None,
+    fee_assessment: str = "",
 ) -> dict:
     """生成展示字段：标题、摘要、来源等。
 
@@ -306,6 +308,16 @@ def generate_display_fields(
     # 默认 evidence
     if not evidence:
         evidence.append(f"title: 保留原标题: {raw_title[:30]}")
+
+    # Phase 2: 用富字段增强 highlight_summary
+    if key_benefits and not highlight_summary:
+        highlight_summary = "、".join(key_benefits[:3])
+    elif key_benefits and highlight_summary:
+        benefits_short = "、".join(key_benefits[:2])
+        if benefits_short not in highlight_summary:
+            highlight_summary = f"{highlight_summary}（{benefits_short}）"
+    elif fee_assessment and highlight_summary and fee_assessment not in highlight_summary:
+        highlight_summary = f"{highlight_summary}（{fee_assessment}）"
 
     return {
         "title": title,

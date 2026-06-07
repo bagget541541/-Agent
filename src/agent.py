@@ -1095,6 +1095,48 @@ def step5_analyze(batch: CreditCardBatch, scorer: str = "keyword", model: str = 
         temp_analysis.unlink(missing_ok=True)
 
 
+def _extract_annual_benefit(ev: dict) -> str:
+    """从评估结果中提取年收益估算（Phase 3）"""
+    import re
+    text = f"{ev.get('recommendation', '')} {ev.get('summary', '')} {' '.join(ev.get('key_benefits', []))}"
+    # "月上限100元" -> 年约1200元
+    m = re.search(r'月[上限]*[^\d]*(\d+)(?:元|返利金|返现)', text)
+    if m:
+        monthly = int(m.group(1))
+        return f"年约{monthly * 12}元收益"
+    # "年返1200元"
+    m = re.search(r'年[返省赚]*[^\d]*(\d+)元', text)
+    if m:
+        return f"年{m.group(1)}元"
+    # "免年费"
+    if '免年费' in text or '0年费' in text:
+        return "免年费"
+    return ""
+
+
+def _load_historical_batches(archive_dir, current_label: str, max_periods: int = 3) -> list:
+    """从归档目录加载最近 N 期 batch.json（Phase 3）"""
+    import json
+    index_file = archive_dir / "index.json"
+    if not index_file.exists():
+        return []
+    try:
+        index = json.loads(index_file.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    batches = []
+    for entry in index[:max_periods + 1]:
+        if entry.get("batch_label") == current_label:
+            continue
+        batch_path = archive_dir / entry.get("path", "").replace("data/archive/", "").replace(os.sep, "/") / "batch.json"
+        if batch_path.exists():
+            try:
+                batches.append(json.loads(batch_path.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+    return batches[:max_periods]
+
+
 def step6_append_suggestions(report_file: str, analysis: dict) -> str:
     """
     Step 6: Save analysis results and append suggestions to Word report
@@ -1148,7 +1190,18 @@ def step6_append_suggestions(report_file: str, analysis: dict) -> str:
             # 分类建议
             cat_summary = analysis.get('category_summary', {})
             highlighted_banks = set()
+            # P0-3: 过滤“其他”和低价值活动
             cat_order = ['新卡', '权益变更', '活动', '公告']
+            # 低价值活动标题集合（用于过滤持卡建议）
+            _low_value_titles = set()
+            _low_val_kw = ["首绑赠", "立减券", "洗车券",
+                           "首单立减", "卡号订制",
+                           "满30返", "满200返", "达标礼"]
+            for cat_data in cat_summary.values():
+                for it in cat_data.get("items", []):
+                    t = it.get("title", "")
+                    if sum(1 for kw in _low_val_kw if kw in t) >= 1:
+                        _low_value_titles.add(t)
             cat_emoji = {'新卡': '🆕', '权益变更': '🔄', '活动': '🏷️', '公告': '📋'}
             cat_title = {'新卡': '新卡申请建议', '权益变更': '权益变更提醒', '活动': '活动参与建议', '公告': '重要公告'}
 
@@ -1165,7 +1218,8 @@ def step6_append_suggestions(report_file: str, analysis: dict) -> str:
                     continue
                 data = cat_summary[cat]
                 items = data.get('items', [])
-                highlight_items = [it for it in items if it.get('evaluation', {}).get('is_highlight')]
+                # P0-3: 过滤低价值活动
+                highlight_items = [it for it in items if it.get('evaluation', {}).get('is_highlight') and it.get('title', '') not in _low_value_titles]
                 if not highlight_items:
                     continue
 
@@ -1232,17 +1286,41 @@ def step6_append_suggestions(report_file: str, analysis: dict) -> str:
                     label = f'{bank} · {title}'
 
                     if cat == '新卡' and score >= 7:
-                        all_recommended.append(label)
+                        all_recommended.append((label, ev))
                     elif cat == '权益变更' and score <= 4:
                         all_watch.append(label)
                     elif cat == '活动' and score >= 7:
                         all_activity.append(label)
 
+            # Phase 3: 推荐申请带排名+年收益估算
             if all_recommended:
+                doc.add_paragraph()
                 p = doc.add_paragraph()
-                r = p.add_run('✅ 推荐申请：')
+                r = p.add_run('✅ 当前最值得申请的卡')
                 r.bold = True
-                p.add_run('、'.join(all_recommended))
+                for rank, (label, ev_item) in enumerate(all_recommended, 1):
+                    benefit = _extract_annual_benefit(ev_item)
+                    suffix = f'（{benefit}）' if benefit else ''
+                    doc.add_paragraph(f'{rank}. {label}{suffix}')
+
+            # Phase 3: 同类卡对比
+            from collections import defaultdict as _ddict
+            scene_groups = _ddict(list)
+            for cat in ['新卡', '活动']:
+                for item in cat_summary.get(cat, {}).get('items', []):
+                    ev = item.get('evaluation', {})
+                    if ev.get('overall_score', 0) >= 7:
+                        benefits_text = ' '.join(ev.get('key_benefits', []))
+                        for scene in ['返现', '里程', '贵宾厅', '接送机', '积分']:
+                            if scene in benefits_text or scene in item.get('title', ''):
+                                scene_groups[scene].append(f"{item.get('bank','')} · {item.get('title','')}")
+            for scene, cards in scene_groups.items():
+                if len(cards) >= 2:
+                    doc.add_paragraph()
+                    p = doc.add_paragraph()
+                    r = p.add_run(f'🔄 {scene}类卡对比：')
+                    r.bold = True
+                    doc.add_paragraph(f'均为高分{scene}卡，建议根据个人消费场景择一。')
 
             if all_activity:
                 p = doc.add_paragraph()
@@ -1258,6 +1336,106 @@ def step6_append_suggestions(report_file: str, analysis: dict) -> str:
 
             if not (all_recommended or all_activity or all_watch):
                 doc.add_paragraph('本期无特别重点推荐。建议根据个人消费习惯合理安排用卡。')
+
+            # Phase 2: 建议销卡/放弃
+            all_cancel = []
+            for cat in ['权益变更', '活动', '新卡']:
+                for item in cat_summary.get(cat, {}).get('items', []):
+                    ev = item.get('evaluation', {})
+                    if ev.get('overall_score', 5) <= 3:
+                        bank = item.get('bank', '')
+                        title = item.get('title', '')
+                        label = f'{bank} · {title}'
+                        if label not in all_cancel:
+                            all_cancel.append(label)
+            if all_cancel:
+                doc.add_paragraph()
+                p = doc.add_paragraph()
+                r = p.add_run('🗑️ 建议销卡/放弃：')
+                r.bold = True
+                p.add_run('、'.join(all_cancel))
+
+            # Phase 2: 建议保留但需调整
+            all_adjust = []
+            for cat in cat_order:
+                if cat not in cat_summary:
+                    continue
+                for item in cat_summary[cat].get('items', []):
+                    ev = item.get('evaluation', {})
+                    score = ev.get('overall_score', 5)
+                    if 4 <= score <= 6 and ev.get('is_highlight'):
+                        bank = item.get('bank', '')
+                        title = item.get('title', '')
+                        label = f'{bank} · {title}'
+                        if label not in all_adjust:
+                            all_adjust.append(label)
+            if all_adjust:
+                doc.add_paragraph()
+                p = doc.add_paragraph()
+                r = p.add_run('🔧 建议保留但需调整：')
+                r.bold = True
+                p.add_run('、'.join(all_adjust))
+
+            # Phase 2: 近期关键时间节点
+            import re as _re
+            time_nodes = []
+            for cat_data in cat_summary.values():
+                for item in cat_data.get('items', []):
+                    ev = item.get('evaluation', {})
+                    if not ev.get('is_highlight'):
+                        continue
+                    title = item.get('title', '')
+                    notes = ev.get('notes', '') or ''
+                    rec = ev.get('recommendation', '') or ''
+                    text = f'{notes} {rec}'
+                    dates = _re.findall(r'(\d{1,2}[\.月]\d{1,2}[日号]?)', text)
+                    for d in dates:
+                        node = f'{d} — {title}'
+                        if node not in time_nodes:
+                            time_nodes.append(node)
+            if time_nodes:
+                doc.add_paragraph()
+                doc.add_heading('📅 近期关键时间节点', level=2)
+                for tn in time_nodes[:5]:
+                    doc.add_paragraph(f'• {tn}')
+
+            # Phase 3: 跨期趋势分析（替换 Phase 2 单期逻辑）
+            trends = []
+            # 单期趋势：当前批次低分条目
+            for cat_data in cat_summary.values():
+                for item in cat_data.get('items', []):
+                    ev = item.get('evaluation', {})
+                    if ev.get('overall_score', 5) <= 3 and ev.get('highlight_reason'):
+                        bank = item.get('bank', '')
+                        title = item.get('title', '')
+                        reason = ev['highlight_reason']
+                        trend = f'{bank} {title}：{reason}'
+                        if trend not in trends:
+                            trends.append(trend)
+            # 跨期趋势：从历史归档中检测
+            try:
+                from common.config import ARCHIVE_DIR
+                hist_batches = _load_historical_batches(ARCHIVE_DIR, analysis.get('batch_label', ''))
+                if hist_batches:
+                    downgrade_kw = ['缩水', '取消', '减少', '限制', '下调', '降低']
+                    for batch in hist_batches:
+                        for item in batch.get('items', []):
+                            text = f"{item.get('title', '')} {item.get('raw_text', '')}"
+                            for kw in downgrade_kw:
+                                if kw in text:
+                                    bank = item.get('bank', '')
+                                    title = item.get('title', '')
+                                    hist_trend = f'{bank} {title}（历史）：{kw}'
+                                    if hist_trend not in trends:
+                                        trends.append(hist_trend)
+                                    break
+            except Exception:
+                pass  # 跨期分析失败不影响主流程
+            if trends:
+                doc.add_paragraph()
+                doc.add_heading('📈 市场趋势提醒', level=2)
+                for t in trends[:5]:
+                    doc.add_paragraph(f'• {t}')
 
             # 涉及银行
             if highlighted_banks:
@@ -1343,6 +1521,7 @@ def run_pipeline(
     scorer: str = "keyword",
     model: str = None,
     skip_fetch: bool = False,
+    skip_qa: bool = False,
     archive_only: bool = False,
     mode: str = 'a',
 ):
@@ -1356,6 +1535,7 @@ def run_pipeline(
         scorer: 评分模式
         model: LLM 模型
         skip_fetch: 跳过抓取步骤
+        skip_qa: 跳过文档 QA 验收
         archive_only: 仅归档
         mode: 运行模式 ('a'/'b' 走完整流程, 'c' 仅 Step4 生成 md 报告 → Step7 归档)
     """
@@ -1462,7 +1642,92 @@ def run_pipeline(
     except Exception as e:
         print(f"\n  [LLM Review] Skipped: {e}")
 
-    # Step 4: 生成报告
+    # Step 5: 分析（mode c 跳过）—— Phase 1: 移到 Step 4 之前，以便富字段回写
+    if mode == 'c':
+        analysis = {}
+        print("\n[Skip] Step5 (mode c)")
+    else:
+        analysis = result.run_step(
+            "Step5 持卡分析",
+            lambda: step5_analyze(batch, scorer, model),
+            default={},
+        )
+
+    # Phase 1: Step 5 完成后，将富字段写回 batch.items
+    if analysis and analysis.get('category_summary'):
+        enriched_count = 0
+        # 通过 title 匹配，将 analysis 中的富字段回写到 batch.items
+        enriched_map = {}
+        for cat_data in analysis['category_summary'].values():
+            for item_data in cat_data.get('items', []):
+                t = item_data.get('title', '')
+                if t:
+                    enriched_map[t] = item_data
+        for item in batch.items:
+            enriched = enriched_map.get(item.title, {})
+            ev = enriched.get('evaluation', {})
+            if ev:
+                ta = ev.get('target_audience', '')
+                if ta:
+                    item.target_audience = ta
+                kb = ev.get('key_benefits', [])
+                if kb:
+                    item.key_benefits = kb
+                fa = ev.get('fee_assessment', '')
+                if fa:
+                    item.fee_assessment = fa
+                wa = ev.get('worth_applying', [])
+                if wa:
+                    item.worth_applying = wa
+                pe = ev.get('priority_emoji', '')
+                if pe:
+                    item.priority_emoji = pe
+                    enriched_count += 1
+                # Phase 2+fix: 用富字段增强 highlight_summary（始终执行）
+                from common.display_fields import generate_display_fields as _gdf
+                dr = _gdf(
+                    bank=item.bank, category=item.category,
+                    structured=item.structured, raw_title=item.raw_title,
+                    raw_text=item.raw_text,
+                    key_benefits=item.key_benefits,
+                    fee_assessment=item.fee_assessment,
+                )
+                item.highlight_summary = dr["highlight_summary"]
+                # P0-2: 如果 highlight_summary 仍为空，从 title/key_benefits 生成 fallback
+                if not item.highlight_summary:
+                    if item.key_benefits:
+                        item.highlight_summary = "、".join(item.key_benefits[:3])
+                    elif item.title:
+                        item.highlight_summary = item.title[:80]
+        if enriched_count:
+            print(f"  [Phase1] Enriched {enriched_count} items with structured fields")
+
+    # P0-3: 噪音过滤 — 移除"其他"类 + raw_text 过长截断 + 低价值活动标记
+    _items_before = len(batch.items)
+    # 1. 移除所有"其他"类（均为误分类或垃圾数据）
+    batch.items = [it for it in batch.items if it.category != "其他"]
+    # 2. raw_text 过长截断（>2000 字符的网页抓取噪音）
+    for it in batch.items:
+        if len(it.raw_text or "") > 2000:
+            it.raw_text = it.raw_text[:2000] + "..."
+    # 3. 同银行多条低价值活动合并标记（score <= 3 的小活动）
+    _low_val_kw = ["首绑赠", "立减券", "洗车券", "首单立减", "卡号订制",
+                   "满30返", "满200返", "达标礼"]
+    for it in batch.items:
+        if it.category == "活动":
+            txt = f"{it.title} {it.raw_text}"
+            if sum(1 for kw in _low_val_kw if kw in txt) >= 1:
+                # 标记为低价值，报告中精简显示
+                if not it.structured:
+                    it.structured = {}
+                it.structured["_low_value"] = True
+    _filtered = _items_before - len(batch.items)
+    if _filtered:
+        print(f"  [P0-3] Filtered {_filtered} noisy items (other category)")
+    if _dedup_count:
+        print(f"  [P0-3] Deduped {_dedup_count} items (removed duplicate paragraphs)")
+
+    # Step 4: 生成报告 — Phase 1: 在 Step 5 之后，batch 已含富字段
     if mode == 'c':
         report_file = result.run_step(
             "Step4 生成 MD 报告",
@@ -1476,17 +1741,6 @@ def run_pipeline(
             default=None,
         )
 
-    # Step 5: 分析（mode c 跳过）
-    if mode == 'c':
-        analysis = {}
-        print("\n[Skip] Step5 (mode c)")
-    else:
-        analysis = result.run_step(
-            "Step5 持卡分析",
-            lambda: step5_analyze(batch, scorer, model),
-            default={},
-        )
-
     # Step 6: 追加持卡建议（mode c 跳过，需要 report_file 存在）
     if mode == 'c':
         print("\n[Skip] Step6 (mode c)")
@@ -1498,6 +1752,41 @@ def run_pipeline(
         )
     else:
         print("\n[Skip] Step6 (no report file)")
+
+    # Step 6.5: 文档 QA 验收
+    if skip_qa:
+        print("\n[Skip] Step6.5 QA (skip_qa flag)")
+    elif mode == 'c':
+        print("\n[Skip] Step6.5 QA (mode c)")
+    elif report_file:
+        try:
+            from common.qa_review import run_qa_review
+            result.run_step(
+                "Step6.5 QA验收",
+                lambda: run_qa_review(report_file),
+                default="",
+            )
+        except ImportError as e:
+            print(f"\n  [Warn] QA review module not available: {e}")
+        except Exception as e:
+            print(f"\n  [Warn] QA review failed: {e}")
+    else:
+        print("\n[Skip] Step6.5 QA (no report file)")
+
+
+    # Phase 4: QA 反馈 — 读取 qa_findings.json 并输出 C 类问题摘要
+    if report_file and not skip_qa and mode != "c":
+        try:
+            findings_file = Path(report_file).parent / "qa_findings.json"
+            if findings_file.exists():
+                findings = json.loads(findings_file.read_text(encoding="utf-8"))
+                quality_score = findings.get("quality_score", 0)
+                c_issues = findings.get("issues", {}).get("C", [])
+                if c_issues:
+                    print(f"  [QA Feedback] {len(c_issues)} C类问题，建议优先处理")
+                print(f"  [QA Feedback] 质量评分: {quality_score}/100")
+        except Exception:
+            pass
 
     # Step 7: 归档
     result.run_step(
@@ -1557,6 +1846,7 @@ def main():
                         help="评分模式 (默认 keyword)")
     parser.add_argument("--model", help="LLM 模型名称")
     parser.add_argument("--skip-fetch", action="store_true", help="跳过抓取步骤")
+    parser.add_argument("--skip-qa", action="store_true", help="跳过文档 QA 验收")
     parser.add_argument("--archive-only", action="store_true", help="仅归档")
     parser.add_argument("--mode", choices=["a", "c"], default="a",
                         help="运行模式: a 完整流程, c 仅生成 md 报告 + 归档 (默认 a)")
@@ -1570,6 +1860,7 @@ def main():
         scorer=args.scorer,
         model=args.model,
         skip_fetch=args.skip_fetch,
+        skip_qa=args.skip_qa,
         archive_only=args.archive_only,
         mode=args.mode,
     )

@@ -1,5 +1,56 @@
 # 修订记录
 
+## v0.20.0 — 2026-06-07
+
+### Phase 1-3: 条目结构化 + 优先级标注 + 综合建议升级
+
+#### Phase 1: 条目结构化重写 + 优先级标注
+- **Schema 扩展**：`common/schema.py` 新增 5 个字段：`target_audience`（定位）、`key_benefits`（核心权益）、`fee_assessment`（年费回报评估）、`worth_applying`（是否值得申请）、`priority_emoji`（优先级 emoji）
+- **评分引擎扩展**：`card-holding-suggestion/scripts/scorer.py`
+  - `ROI_Score` 新增 4 个富字段 + `priority_emoji`
+  - 新增 `score_to_emoji()` 函数：score>=7->🔴, 4-6->🟡, <=3->⚪; 权益变更>=7->🟢
+  - LLM prompt 扩展：要求输出 target_audience/key_benefits/fee_assessment/worth_applying
+  - keyword fallback：从 raw_text/structured 提取富字段
+- **Pipeline 顺序调整**：`src/agent.py` Step 5 移到 Step 4 之前，富字段回写 batch.items
+- **报告渲染改造**：`word-merger/scripts/generate_report.py`
+  - H2 标题追加 priority_emoji
+  - 新增亮点/定位/核心权益/年费回报评估/是否值得申请渲染块
+  - 🟢 正面变更跳过"建议"段落；⚪ 低价值活动精简显示
+  - 目录改为手写风格（每条带 emoji + 摘要），删除"内容概览"和"本期亮点"
+- **41 个新测试**：Phase 1 (19) + Phase 2 (9) + Phase 3 (13)
+
+#### Phase 2: 标题优化 + highlight 增强 + 综合建议升级
+- **LLM 标题压缩**：`generate_report.py` `build_report_title()` 新增 LLM 路径，top-3 高亮条目压缩为 <=50 字标题，失败 fallback
+- **highlight 增强**：`common/display_fields.py` 新增 `key_benefits`/`fee_assessment` 参数，高亮摘要追加核心权益/年费评估
+- **综合建议升级**：`src/agent.py` Step 6 新增 4 个段落
+  - 建议销卡/放弃（score<=3）
+  - 建议保留但需调整（score 4-6）
+  - 近期关键时间节点（从 notes 提取日期）
+  - 市场趋势提醒
+- **格式统一**：移除新卡"卡亮点"重复渲染
+
+#### Phase 3: 跨条目分析 + 年收益 + 跨期趋势 + QA 闭环
+- **年收益估算**：`_extract_annual_benefit()` 从 recommendation/summary/key_benefits 正则提取年收益
+- **推荐排名**：推荐申请段落按 score 降序，每条附带年收益
+- **同类卡对比**：基于 key_benefits 场景关键词分组，同场景>=2 张高分卡输出对比
+- **跨期趋势**：`_load_historical_batches()` 加载最近 3 期归档，检测降级趋势
+- **QA 反馈闭环**：`common/qa_review.py` 同时输出 `qa_findings.json`（结构化问题 + quality_score）
+- **keyword fallback 增强**：target_audience 从 structured 读取；fee_assessment 增加"首年免/刷卡免/刚性年费"模式；worth_applying 基于 score 生成
+
+#### E2E 修复（6 个问题）
+- **P0-1**：target_audience 0% -> 73%（从 structured["适用人群"] 读取 + title fallback）
+- **P0-2**：highlight_summary 0% -> 100%（enrichment 始终执行 + fallback 生成）
+- **P0-3**：噪音过滤（移除"其他"类 + raw_text 段落去重 + 低价值活动标记 + 标题清理）
+- **P1-4**：fee_assessment 10% -> 13%（从 structured["详情"] 提取）
+- **P1-5**：评分区分度优化（structured 字段也计分）
+- **P1-6**：worth_applying 0% -> 40%（keyword 模式基于 score 生成）
+
+#### raw_text 段落去重（方案B）
+- 汇丰条目 48523 -> 3000 chars（移除 1185 个重复段落）
+- 去重逻辑：按段落拆分，取前 30 字符作为去重 key，跳过已见前缀
+- 去重后仍超 3000 字符则截断兑底
+
+
 ## v0.19.0 — 2026-06-06
 
 ### merge_docs.py 重构 — LLM 智能合并

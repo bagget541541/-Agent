@@ -36,7 +36,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 # 导入 ROI 评分引擎
-from scripts.scorer import score_with_llm, score_with_keywords, DIMENSION_TEMPLATES
+from scripts.scorer import score_with_llm, score_with_keywords, DIMENSION_TEMPLATES, score_to_emoji
 
 
 # ── 上下文构建 ──────────────────────────────────────────────
@@ -104,7 +104,15 @@ def build_context(batch_data: dict, focus: str = "", scorer: str = "keyword") ->
                 result = score_with_llm(item)
             else:
                 result = score_with_keywords(item, DIMENSION_TEMPLATES[cat]())
-            points['evaluation'] = result.to_dict()
+            ev_dict = result.to_dict()
+            points['evaluation'] = ev_dict
+            # Phase 1: 写回富字段到原始 item（供 generate_report.py 使用）
+            item['target_audience'] = ev_dict.get('target_audience', '')
+            item['key_benefits'] = ev_dict.get('key_benefits', [])
+            item['fee_assessment'] = ev_dict.get('fee_assessment', '')
+            item['worth_applying'] = ev_dict.get('worth_applying', [])
+            item['priority_emoji'] = ev_dict.get('priority_emoji', '') or score_to_emoji(
+                cat, ev_dict.get('overall_score', 5), ev_dict.get('overall_roi', ''))
         else:
             points['evaluation'] = {
                 'overall_score': 5.0,
@@ -143,6 +151,8 @@ def build_context(batch_data: dict, focus: str = "", scorer: str = "keyword") ->
         ],
     }
 
+    # Phase 1: 将富字段已写回的 items 附加到 context（供 agent.py 使用）
+    context['_enriched_items'] = items
     return context
 
 

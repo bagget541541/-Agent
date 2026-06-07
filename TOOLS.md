@@ -57,3 +57,17 @@ AIGC:
 ---
 
 > 本内容由 Coze AI 生成，请遵循相关法律法规及《人工智能生成合成内容标识办法》使用与传播。
+
+
+- **Phase 1-3 工具经验：**
+  1. `scorer.py` keyword fallback：从 structured[适用人群] 读取 target_audience 比正则提取更可靠（raw_text 多为公告正文，不含定位描述）
+  2. `generate_report.py` 标题清理：当 display_title 含换行/活动名额/二、等噪音时，需多轮清理（去噪音后缀 → 去重复前缀 → 截断尾部噪音 → 长度截断）
+  3. raw_text 段落去重：按前 30 字符去重，对网页抓取重复内容效果显著（汇丰条目 48523->3000 chars）
+  4. `step6_append_suggestions()` 不能直接访问 batch.items，低价值标记需从 analysis dict 中提取
+  5. “其他”类条目全部是垃圾数据（导航文本/页脚），直接移除比过滤更安全
+  6. emoji 在 Windows 控制台输出时会触发 gbk 编码错误，需用 `sys.stdout.reconfigure(encoding='utf-8', errors='replace')` 处理
+
+- **doc-qa-reviewer：** 文档输出验收工具，对 .docx 做五类质量检查（标题格式/图文匹配/逻辑一致性/废话识别/读者视角），输出 qa_report_MMDD.md + qa_findings.json（结构化问题 + quality_score）；集成在 Step 6.5，使用 --skip-qa 可跳过
+
+- **raw_text 段落去重（方案B）：** 针对网页抓取重复内容（如汇丰 48523 chars），按段落拆分后取前 30 字符去重，保留所有唯一内容；去重后仍超 3000 字符则截断兑底
+
