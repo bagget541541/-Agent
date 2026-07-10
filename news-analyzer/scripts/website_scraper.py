@@ -289,6 +289,12 @@ BANK_CONFIGS["兴业银行"] = BankConfig(
     title_selector=("a", "text"),
     date_selector=("span.date, .time, td:nth-child(2)", "text"),
     date_format="%Y-%m-%d",
+    detail_title_selector="h1, .title, .article-title, .newstop h2, .newstop h1",
+    detail_date_selector=".date, .time, .article-date, .newstop .time, .newstop p",
+    detail_content_selector=".news_content, .news-detail, .newstop, .content, .detail-content, .article-content",
+    detail_remove_selectors=["script", "style", "nav", "footer", "noscript"],
+    detail_start_markers=["关于", "尊敬的客户：", "尊敬的持卡人："],
+    detail_end_markers=["在线申请信用卡", "产品介绍", "办卡须知", "全面客户服务", "Copyright"],
 )
 
 # 东亚银行（banks_parser_v2 中为纯静态列表页，通用选择器）
@@ -682,7 +688,130 @@ def _clean_title(title: str) -> str:
     title = re.sub(r"\s+", " ", title).strip()
     for sep in "\n\r\t":
         title = title.replace(sep, "")
+    if "欢迎您" in title and "关于" in title:
+        about_idx = title.find("关于")
+        if 0 < about_idx < 40:
+            title = title[about_idx:]
     return title.strip(" ·∙•●◦")
+
+
+def _looks_like_navigation_noise(text: str) -> bool:
+    """判断提取结果是否更像导航菜单而非正文。"""
+    if not text:
+        return True
+
+    nav_keywords = [
+        "加入收藏", "在线申请信用卡", "产品介绍", "白金卡系列", "标准卡系列", "主题卡系列",
+        "联名", "办卡须知", "收费标准", "用卡指南", "安全提醒", "全面客户服务",
+    ]
+    keyword_hits = sum(1 for kw in nav_keywords if kw in text)
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    short_lines = sum(1 for line in lines if len(line) <= 12)
+    has_sentence_punct = any(p in text for p in ("。", "；", "：", "！", "？"))
+
+    if keyword_hits >= 5:
+        return True
+    if len(lines) >= 8 and short_lines >= 6 and not has_sentence_punct:
+        return True
+    return False
+
+
+def _cleanup_detail_content(content: str, bank: Optional[BankConfig], title: str = "") -> str:
+    """清理详情页正文中的导航、页脚和模板噪音。"""
+    if not content:
+        return ""
+
+    content = "\n".join(l.strip() for l in content.split("\n") if l.strip())
+
+    if title and title in content:
+        content = content[content.find(title):]
+
+    header_markers = ["您的位置：", "您的位置:", "当前位置：", "首页 >", "客服 >", "最新公告"]
+    content_stripped = content.lstrip()
+    for marker in header_markers:
+        idx = content_stripped.find(marker)
+        if idx >= 0 and idx < 200:
+            rest = content_stripped[idx + len(marker):]
+            for line in rest.split("\n"):
+                line_s = line.strip()
+                if len(line_s) >= 8 and re.search(r"[\u4e00-\u9fff]", line_s):
+                    real_start = content_stripped.find(line_s)
+                    if real_start >= 0:
+                        content_stripped = content_stripped[real_start:]
+                        break
+            content = content_stripped
+            break
+
+    footer_markers = ["网站地图", "隐私保密声明", "客户投诉渠道", "免责声明", "Copyright(C)"]
+    footer_positions = [content.find(marker) for marker in footer_markers if marker in content]
+    footer_positions = [pos for pos in footer_positions if pos >= 0]
+    if footer_positions:
+        content = content[:min(footer_positions)]
+
+    lines = [l.strip() for l in content.split("\n") if l.strip()]
+
+    noise_substrings = [
+        "ATM/自助/网点查询", "境外拨打服务热线", "特别卡种热点问题", "高端信用卡",
+        "CarCard汽车信用卡", "常用文件下载", "个人税收居民身份声明", "无限卡授权委托书下载",
+        "白金卡授权委托书下载", "附赠保险申请书下载", "失卡保障申请书下载", "银行首页",
+        "广发卡招聘", "帮助中心", "无障碍辅助浏览", "投诉建议", "网银登录", "热门关键字",
+        "热门频道", "积分规则", "在线客服", "发现精彩APP", "信用卡官方APP", "广发银行版权所有",
+        "粤ICP备", "粤公网安备", "网站声明"
+    ]
+    exact_noise_lines = {
+        "|", "搜索", "首页", "分期", "公告", "优惠活动", "分期理财", "服务指南", "品牌历史",
+        "当前位置：", "当前位置:", "【", "】", "字号：", "大", "中", "小", "< 返回", ">",
+        "信用卡申请", "卡片申请", "消费者权益保护", "自助服务", "积分查询", "品牌历程"
+    }
+
+    filtered_lines = []
+    for line in lines:
+        if line in exact_noise_lines:
+            continue
+        if any(marker in line for marker in noise_substrings):
+            continue
+        if re.fullmatch(r"客服电话\s*[:：].*", line):
+            continue
+        if re.fullmatch(r"信用卡热线\s*[:：].*", line):
+            continue
+        if re.fullmatch(r"(?:\d+小时)?客服热线\s*[:：].*", line):
+            continue
+        filtered_lines.append(line)
+
+    content = "\n".join(filtered_lines)
+
+    if bank and bank.detail_start_markers:
+        for marker in bank.detail_start_markers:
+            if not marker:
+                continue
+            idx = content.find(marker)
+            if idx >= 0 and idx < 500:
+                content = content[idx:]
+                break
+
+    if bank and bank.detail_end_markers:
+        positions = [content.find(m) for m in bank.detail_end_markers if m and m in content]
+        positions = [p for p in positions if p >= 0]
+        if positions:
+            content = content[:min(positions)]
+
+    real_start_markers = [title, "尊敬的客户：", "尊敬的持卡人：", "为更好地", "为保障您的权益", "现将", "特此公告"]
+    for marker in real_start_markers:
+        if not marker:
+            continue
+        idx = content.find(marker)
+        if idx > 0 and idx < 400:
+            content = content[idx:]
+            break
+
+    footer_markers = ["热门频道", "积分规则", "在线客服", "发现精彩APP", "信用卡官方APP", "广发银行版权所有", "网站声明"]
+    footer_positions = [content.find(marker) for marker in footer_markers if marker in content]
+    footer_positions = [pos for pos in footer_positions if pos >= 0]
+    if footer_positions:
+        content = content[:min(footer_positions)]
+
+    lines = [l.strip() for l in content.split("\n") if l.strip()]
+    return "\n".join(lines)
 
 def _extract_date(text: str, last: bool = False) -> str:
     """从文本中提取 YYYY-MM-DD 格式日期；last=True 时取最后一个匹配。"""
@@ -1236,6 +1365,7 @@ def fetch_detail_page(url: str, bank: BankConfig) -> Optional[dict]:
     date_str = date_el.get_text(strip=True) if date_el else ""
 
     # 正文
+    body = soup.find("body") or soup
     content_el = soup.select_one(bank.detail_content_selector)
     if content_el:
         # DOM 层过滤：按配置删除噪音节点
@@ -1249,12 +1379,9 @@ def fetch_detail_page(url: str, bank: BankConfig) -> Optional[dict]:
         content = content_el.get_text(separator="\n", strip=True)
     else:
         # 回退：取 body 文本
-        body = soup.find("body") or soup
         content = body.get_text(separator="\n", strip=True)
 
-    # 清理多余空白
-    lines = [l.strip() for l in content.split("\n") if l.strip()]
-    content = "\n".join(lines)
+    content = _cleanup_detail_content(content, bank, title)
 
     # 回退策略：如果正文过短或不含中文，尝试使用 Selenium 渲染页面（若可用）
     try:
@@ -1285,8 +1412,7 @@ def fetch_detail_page(url: str, bank: BankConfig) -> Optional[dict]:
                     body2 = soup2.find("body") or soup2
                     content2 = body2.get_text(separator="\n", strip=True)
 
-                lines2 = [l.strip() for l in content2.split("\n") if l.strip()]
-                content2 = "\n".join(lines2)
+                content2 = _cleanup_detail_content(content2, bank, title)
                 if len(content2) > len(content):
                     content = content2
                     print("OK")
@@ -1297,101 +1423,11 @@ def fetch_detail_page(url: str, bank: BankConfig) -> Optional[dict]:
     except Exception:
         pass
 
-    if title and title in content:
-        content = content[content.find(title):]
-
-    # ── 清理正文开头的导航/面包屑内容（如"您的位置：客服 > 最新公告"） ──
-    header_markers = ["您的位置：", "您的位置:", "当前位置：", "首页 >", "客服 >", "最新公告"]
-    content_stripped = content.lstrip()
-    for marker in header_markers:
-        idx = content_stripped.find(marker)
-        if idx >= 0 and idx < 200:  # 只在正文前 200 字符内查找导航
-            # 找到第一个中文标题/段落作为真正内容的起点
-            rest = content_stripped[idx + len(marker):]
-            # 跳过可能存在的换行和分隔符行
-            for line in rest.split("\n"):
-                line_s = line.strip()
-                if len(line_s) >= 8 and re.search(r"[\u4e00-\u9fff]", line_s):
-                    # 找到真实内容起始行
-                    real_start = content_stripped.find(line_s)
-                    if real_start >= 0:
-                        content_stripped = content_stripped[real_start:]
-                        break
-            # 如果还没找到合适起始，至少移除导航行之前的全部内容
-            content = content_stripped
-            break
-
-    footer_markers = ["网站地图", "隐私保密声明", "客户投诉渠道", "免责声明", "Copyright(C)"]
-    footer_positions = [content.find(marker) for marker in footer_markers if marker in content]
-    footer_positions = [pos for pos in footer_positions if pos >= 0]
-    if footer_positions:
-        content = content[:min(footer_positions)]
-
-    lines = [l.strip() for l in content.split("\n") if l.strip()]
-
-    noise_substrings = [
-        "ATM/自助/网点查询", "境外拨打服务热线", "特别卡种热点问题", "高端信用卡",
-        "CarCard汽车信用卡", "常用文件下载", "个人税收居民身份声明", "无限卡授权委托书下载",
-        "白金卡授权委托书下载", "附赠保险申请书下载", "失卡保障申请书下载", "银行首页",
-        "广发卡招聘", "帮助中心", "无障碍辅助浏览", "投诉建议", "网银登录", "热门关键字",
-        "热门频道", "积分规则", "在线客服", "发现精彩APP", "信用卡官方APP", "广发银行版权所有",
-        "粤ICP备", "粤公网安备", "网站声明"
-    ]
-    exact_noise_lines = {
-        "|", "搜索", "首页", "分期", "公告", "优惠活动", "分期理财", "服务指南", "品牌历史",
-        "当前位置：", "当前位置:", "【", "】", "字号：", "大", "中", "小", "< 返回", ">",
-        "信用卡申请", "卡片申请", "消费者权益保护", "自助服务", "积分查询", "品牌历程"
-    }
-
-    filtered_lines = []
-    for line in lines:
-        if line in exact_noise_lines:
-            continue
-        if any(marker in line for marker in noise_substrings):
-            continue
-        if re.fullmatch(r"客服电话\s*[:：].*", line):
-            continue
-        if re.fullmatch(r"信用卡热线\s*[:：].*", line):
-            continue
-        if re.fullmatch(r"(?:\d+小时)?客服热线\s*[:：].*", line):
-            continue
-        filtered_lines.append(line)
-
-    content = "\n".join(filtered_lines)
-
-    # ── 配置化正文开始/结束标记截取 ──
-    if bank.detail_start_markers:
-        for marker in bank.detail_start_markers:
-            if not marker:
-                continue
-            idx = content.find(marker)
-            if idx >= 0 and idx < 500:
-                content = content[idx:]
-                break
-
-    if bank.detail_end_markers:
-        positions = [content.find(m) for m in bank.detail_end_markers if m and m in content]
-        positions = [p for p in positions if p >= 0]
-        if positions:
-            content = content[:min(positions)]
-
-    real_start_markers = [title, "尊敬的客户：", "尊敬的持卡人：", "为更好地", "为保障您的权益", "现将", "特此公告"]
-    for marker in real_start_markers:
-        if not marker:
-            continue
-        idx = content.find(marker)
-        if idx > 0 and idx < 400:
-            content = content[idx:]
-            break
-
-    footer_markers = ["热门频道", "积分规则", "在线客服", "发现精彩APP", "信用卡官方APP", "广发银行版权所有", "网站声明"]
-    footer_positions = [content.find(marker) for marker in footer_markers if marker in content]
-    footer_positions = [pos for pos in footer_positions if pos >= 0]
-    if footer_positions:
-        content = content[:min(footer_positions)]
-
-    lines = [l.strip() for l in content.split("\n") if l.strip()]
-    content = "\n".join(lines)
+    if _looks_like_navigation_noise(content):
+        body_text = body.get_text(separator="\n", strip=True)
+        fallback_content = _cleanup_detail_content(body_text, bank, title)
+        if fallback_content and not _looks_like_navigation_noise(fallback_content):
+            content = fallback_content
 
     # 记录噪音信息
     noise_info = {"removed_selectors": [], "markers_used": {}}
