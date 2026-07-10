@@ -11,7 +11,7 @@ import json
 import os
 import sys
 from dataclasses import fields
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch, mock_open
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -19,6 +19,7 @@ from common.llm_client import (
     LlmClient,
     LlmResponse,
     _get_provider_config,
+    _load_apikey_txt_config,
     _load_file_config,
     call_llm_simple,
     call_llm_simple_str,
@@ -179,6 +180,26 @@ class TestLlmClientResolveFile:
         with patch("common.llm_client._load_file_config", return_value=None):
             client = LlmClient(config_source="file")
             assert client._resolve() is False
+
+
+class TestLoadFileConfigFallbacks:
+    def test_apikey_txt_fallback(self):
+        """~/.llm_config.json 不存在时回退 apikey.txt。"""
+        m = mock_open(read_data="sk-local\nhttps://local.api/v1\n")
+        with patch("common.llm_client.os.path.isfile", side_effect=lambda p: False if p.endswith(".llm_config.json") else True), \
+             patch("common.llm_client._find_project_root", return_value="D:/repo"), \
+             patch("builtins.open", m):
+            cfg = _load_file_config()
+        assert cfg["api_key"] == "sk-local"
+        assert cfg["api_base"] == "https://local.api/v1"
+
+    def test_load_apikey_txt_empty(self):
+        """apikey.txt 为空时返回 None。"""
+        m = mock_open(read_data="")
+        with patch("common.llm_client._find_project_root", return_value="D:/repo"), \
+             patch("common.llm_client.os.path.isfile", return_value=True), \
+             patch("builtins.open", m):
+            assert _load_apikey_txt_config() is None
 
 
 # ═══════════════════════════════════════════════════════════

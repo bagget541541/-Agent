@@ -21,6 +21,18 @@ def _strip_marketing_tail(text: str) -> str:
     return text
 
 
+def _clean_report_title(text: str) -> str:
+    """清理站点模板前缀。"""
+    if not text:
+        return ""
+    text = text.strip()
+    if "欢迎您" in text and "关于" in text:
+        idx = text.find("关于")
+        if 0 < idx < 40:
+            text = text[idx:]
+    return text
+
+
 # ── Category action keywords (title is "good enough" if it contains these) ─
 
 _ACTION_KEYWORDS: dict[str, list[str]] = {
@@ -146,6 +158,178 @@ def _is_date_or_number_fragment(text: str) -> bool:
     return False
 
 
+def _clean_inline_text(text: str) -> str:
+    """压缩空白，保留单行可读性。"""
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text.strip("；，,。 ")
+
+
+def _looks_like_navigation_text(text: str) -> bool:
+    """识别站点导航/菜单型污染文本。"""
+    if not text:
+        return False
+    nav_keywords = [
+        "加入收藏", "在线申请信用卡", "产品介绍", "白金卡系列", "标准卡系列",
+        "主题卡系列", "联名", "办卡须知", "收费标准", "用卡指南", "全面客户服务",
+    ]
+    hits = sum(1 for kw in nav_keywords if kw in text)
+    return hits >= 4
+
+
+def _extract_time_info(text: str) -> str:
+    """抽取时间信息。"""
+    if not text:
+        return ""
+    patterns = [
+        r"(\d{4}年\d{1,2}月\d{1,2}日(?:至|起|开始|生效)?(?:\d{4}年\d{1,2}月\d{1,2}日)?)",
+        r"(\d{4}[./-]\d{1,2}[./-]\d{1,2}(?:至|起|开始|生效)?(?:\d{4}[./-]\d{1,2}[./-]\d{1,2})?)",
+        r"(\d{1,2}月\d{1,2}日(?:至|起|开始|生效)?\d{1,2}月\d{1,2}日)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            return _clean_inline_text(m.group(1))
+    return ""
+
+
+def _extract_scope_info(text: str) -> str:
+    """抽取适用卡种/影响范围/参与人群。"""
+    if not text:
+        return ""
+    candidates = [
+        r"(所有[^，。；\n]{2,30}持卡人)",
+        r"([^，。；\n]{2,30}持卡人)",
+        r"([^，。；\n]{2,30}(?:白金卡|金卡|普卡|信用卡|主卡|附属卡|卡客户|客户))",
+    ]
+    for pat in candidates:
+        m = re.search(pat, text)
+        if m:
+            return _clean_inline_text(m.group(1))
+    return ""
+
+
+def _extract_change_core(text: str) -> str:
+    """抽取权益变更核心动作。"""
+    if not text:
+        return ""
+    text = _clean_inline_text(text)
+    comparisons = [
+        r"([^。；]{0,30}由[^。；]{1,30}调整为[^。；]{1,40})",
+        r"([^。；]{0,30}从[^。；]{1,30}调整为[^。；]{1,40})",
+        r"([^。；]{0,30}调整为[^。；]{1,40})",
+        r"([^。；]{0,30}(?:取消|新增|下调|上调|优化|升级|缩减|变更)[^。；]{1,40})",
+    ]
+    for pat in comparisons:
+        m = re.search(pat, text)
+        if m:
+            return _clean_inline_text(m.group(1))
+    return _extract_first_sentence(text)
+
+
+def _extract_activity_core(text: str) -> str:
+    """抽取活动核心内容。"""
+    if not text:
+        return ""
+    text = _clean_inline_text(text)
+    patterns = [
+        r"((?:满|消费满)[^。；]{1,30}(?:减|返|立减|赠|抽|免|享)[^。；]{1,30})",
+        r"((?:可享|即有机会享受|有机会享受)[^。；]{1,40})",
+        r"((?:刷卡|支付|报名|兑换)[^。；]{1,40})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            return _clean_inline_text(m.group(1))
+    return _extract_first_sentence(text)
+
+
+def _extract_fee_info(text: str) -> str:
+    """抽取年费信息。"""
+    if not text:
+        return ""
+    patterns = [
+        r"(首年[^，。；]{1,20}免[^，。；]{0,20})",
+        r"(年费[^，。；]{1,30})",
+        r"((?:刷卡|消费)[^，。；]{1,20}免年费)",
+        r"(刚性年费[^，。；]{1,20})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            return _clean_inline_text(m.group(1))
+    return ""
+
+
+def _build_new_card_summary(sc: dict, structured: dict, raw_title: str, bank: str) -> str:
+    card_name = _clean_inline_text(sc.get("卡种") or structured.get("卡种") or "")
+    highlight = _clean_inline_text(sc.get("卡亮点") or structured.get("卡亮点") or "")
+    detail = _clean_inline_text(sc.get("详情") or structured.get("详情") or "")
+    fee = _extract_fee_info(detail or highlight)
+    parts = []
+    if card_name:
+        parts.append(card_name)
+    if highlight:
+        parts.append(highlight[:50])
+    if fee and fee not in "；".join(parts):
+        parts.append(fee)
+    if parts:
+        return "；".join(parts)[:120]
+    if card_name:
+        return f"{bank}发布{card_name}" if bank else card_name
+    return (raw_title or detail)[:100]
+
+
+def _build_activity_summary(sc: dict, structured: dict, raw_title: str) -> str:
+    activity = _clean_inline_text(sc.get("活动内容") or structured.get("活动内容") or "")
+    time_info = _clean_inline_text(sc.get("活动时间") or structured.get("活动时间") or "")
+    audience = _clean_inline_text(sc.get("适用人群") or structured.get("适用人群") or "")
+    if _looks_like_navigation_text(activity):
+        activity = ""
+    core = _extract_activity_core(activity)
+    scope = _extract_scope_info(audience or activity)
+    parts = []
+    if scope:
+        parts.append(scope)
+    if time_info:
+        parts.append(time_info)
+    elif activity:
+        auto_time = _extract_time_info(activity)
+        if auto_time:
+            parts.append(auto_time)
+    if core:
+        parts.append(core[:50])
+    if parts:
+        return "；".join(dict.fromkeys(parts))[:120]
+    return raw_title[:100] if raw_title else ""
+
+
+def _build_change_summary(sc: dict, structured: dict, raw_title: str) -> str:
+    change = _clean_inline_text(sc.get("变更内容") or structured.get("变更内容") or "")
+    time_info = _clean_inline_text(sc.get("消息时间") or structured.get("消息时间") or "")
+    scope = _clean_inline_text(sc.get("影响范围") or structured.get("影响范围") or "")
+    if _looks_like_navigation_text(change):
+        change = ""
+    core = _extract_change_core(change)
+    parts = []
+    if time_info:
+        parts.append(time_info)
+    elif change:
+        auto_time = _extract_time_info(change)
+        if auto_time:
+            parts.append(auto_time)
+    if scope:
+        parts.append(scope)
+    if core:
+        parts.append(core[:60])
+    elif raw_title:
+        parts.append(raw_title[:40])
+    if parts:
+        return "；".join(dict.fromkeys(parts))[:140]
+    return raw_title[:100] if raw_title else ""
+
+
 def _build_highlight_summary(
     category: str,
     structured: dict,
@@ -162,36 +346,11 @@ def _build_highlight_summary(
     sc = structured_clean or structured or {}
 
     if category == "新卡":
-        card_name = (sc.get("卡种") or structured.get("卡种") or "").strip()
-        highlight = (sc.get("卡亮点") or structured.get("卡亮点") or "").strip()
-        if highlight:
-            summary = f"{card_name}：{highlight[:80]}" if card_name else highlight[:100]
-        elif card_name:
-            summary = f"{bank}发布{card_name}" if bank else card_name
-        else:
-            summary = (raw_title or sc.get("详情", ""))[:100]
+        summary = _build_new_card_summary(sc, structured, raw_title, bank)
     elif category == "活动":
-        activity = (sc.get("活动内容") or structured.get("活动内容") or "").strip()
-        if activity and activity != raw_title:
-            extracted = _extract_first_sentence(activity)
-            # 提取结果只是日期/数字片段 → 用 raw_title 兜底
-            if _is_date_or_number_fragment(extracted) and raw_title:
-                summary = raw_title[:100]
-            else:
-                summary = extracted[:100]
-        else:
-            summary = raw_title[:100] if raw_title else ""
+        summary = _build_activity_summary(sc, structured, raw_title)
     elif category == "权益变更":
-        change = (sc.get("变更内容") or structured.get("变更内容") or "").strip()
-        if change:
-            extracted = _extract_first_sentence(change)
-            # 提取结果只是日期/数字片段 → 用 raw_title 兜底
-            if _is_date_or_number_fragment(extracted) and raw_title:
-                summary = raw_title[:100]
-            else:
-                summary = extracted[:100]
-        else:
-            summary = raw_title[:100] if raw_title else ""
+        summary = _build_change_summary(sc, structured, raw_title)
     elif category == "公告":
         summary = (sc.get("消息内容") or structured.get("消息内容") or "")[:200]
     else:
@@ -265,7 +424,7 @@ def generate_display_fields(
             title_source ("raw" | "generated")
             evidence: list[str]
     """
-    raw_title = (raw_title or "").strip()
+    raw_title = _clean_report_title((raw_title or "").strip())
     title_source = "raw"
     evidence: list[str] = []
 

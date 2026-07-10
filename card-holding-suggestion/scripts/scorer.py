@@ -31,6 +31,13 @@ CONFIG_FILE = os.path.expanduser("~/.llm_config.json")
 
 def load_config() -> dict:
     """从 ~/.llm_config.json 读取 LLM 配置"""
+    try:
+        from common.llm_client import _load_file_config
+        cfg = _load_file_config()
+        if cfg:
+            return cfg
+    except Exception:
+        pass
     if os.path.isfile(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:

@@ -275,8 +275,17 @@ class TestLoadLLMConfig:
         assert result["api_key"] == "env-key"
         assert result["api_base"] == "https://env.api"
 
+    def test_apikey_txt_fallback(self):
+        """共享配置缺失时回退项目根 apikey.txt。"""
+        with patch.object(fwa, "LLM_CONFIG_FILE", "missing.json"), \
+             patch("common.llm_client._load_file_config", return_value={"api_key": "sk-local", "api_base": "https://local.api/v1"}):
+            result = fwa._load_llm_config()
+        assert result["api_key"] == "sk-local"
+        assert result["api_base"] == "https://local.api/v1"
+
     def test_defaults_when_nothing_configured(self):
         with patch("os.path.exists", return_value=False), \
+             patch("common.llm_client._load_file_config", return_value=None), \
              patch.dict(os.environ, {}, clear=True):
             result = fwa._load_llm_config()
         assert result["api_key"] == ""

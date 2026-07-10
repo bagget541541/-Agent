@@ -1,5 +1,25 @@
 # 修订记录
 
+## v0.20.2 — 2026-07-10
+
+### 周报亮点摘要增强 + LLM 配置回退统一
+
+- **亮点摘要增强**：`common/display_fields.py`
+  - 新卡类摘要改为优先提炼 `卡种 + 核心权益 + 年费信息`
+  - 权益变更类摘要改为优先提炼 `时间 + 影响范围 + 前后变化/核心调整`
+  - 活动类摘要改为优先提炼 `适用卡种/参与人群 + 时间 + 核心优惠内容`
+- **LLM 配置优先级调整**：`common/llm_client.py`
+  - 新增项目根目录 `apikey.txt` 解析
+  - 配置读取优先级调整为 `显式参数/环境变量 → apikey.txt → ~/.llm_config.json`
+  - 避免历史 `~/.llm_config.json` 中的过期配置覆盖项目当前可用 key
+- **配置源对齐**：
+  - `wechat-article-extractor/scripts/fetch_wechat_article.py` 复用统一配置读取
+  - `card-holding-suggestion/scripts/scorer.py` 复用统一配置读取
+- **测试补充**：
+  - `tests/test_common/test_display_fields.py`
+  - `tests/test_common/test_llm_client_integration.py`
+  - `tests/test_wechat_extractor/test_fetch.py`
+
 ## v0.20.1 — 2026-07-10
 
 ### 官网抽取修复：兴业银行公告正文导航污染

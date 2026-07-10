@@ -158,6 +158,21 @@ class TestBuildHighlightSummary:
         )
         assert result == "满200减50"
 
+    def test_activity_includes_scope_time_and_core(self):
+        """活动类摘要应带适用卡种/时间/核心内容。"""
+        result = _build_highlight_summary(
+            "活动",
+            {
+                "活动内容": "2026年7月7日至2026年9月30日，农行含银联标识信用卡持卡人在京东支付有机会享受满50元随机减至高18元优惠",
+                "活动时间": "2026.07.07-2026.09.30",
+                "适用人群": "农行含银联标识信用卡持卡人",
+            },
+            raw_title="农行活动通知",
+        )
+        assert "持卡人" in result
+        assert "2026.07.07-2026.09.30" in result
+        assert "满50元随机减至高18元" in result
+
     def test_activity_fallback_to_title(self):
         """活动内容 = raw_title → 回退到 raw_title"""
         result = _build_highlight_summary(
@@ -176,6 +191,36 @@ class TestBuildHighlightSummary:
         assert "白金卡" in result
         assert "影响高端" not in result  # 只取第一句
 
+    def test_benefit_change_includes_time_scope_and_delta(self):
+        """权益变更摘要应带时间、范围和前后变化。"""
+        result = _build_highlight_summary(
+            "权益变更",
+            {
+                "消息时间": "2026.07.07",
+                "影响范围": "兴业银行部分白金卡持卡人",
+                "变更内容": "自2026年9月1日起，部分白金卡次年年费减免规则由积分抵扣调整为刷卡或取现满12笔，或累计分期金额达到5000元。",
+            },
+            raw_title="兴业权益调整公告",
+        )
+        assert "2026.07.07" in result
+        assert "白金卡持卡人" in result
+        assert "由积分抵扣调整为刷卡或取现满12笔" in result
+
+    def test_new_card_includes_fee_info(self):
+        """新卡摘要应带核心权益和年费。"""
+        result = _build_highlight_summary(
+            "新卡",
+            {
+                "卡种": "经典白金卡",
+                "卡亮点": "机场贵宾厅、接送机、里程兑换",
+                "详情": "首年免年费，消费达标免次年年费。",
+            },
+            bank="招商银行",
+        )
+        assert "经典白金卡" in result
+        assert "机场贵宾厅" in result
+        assert "首年免年费" in result
+
     def test_benefit_change_fallback_to_title(self):
         """无变更内容 → 用 raw_title"""
         result = _build_highlight_summary(
@@ -184,6 +229,15 @@ class TestBuildHighlightSummary:
             raw_title="招行权益调整通知",
         )
         assert result == "招行权益调整通知"
+
+    def test_benefit_change_navigation_noise_falls_back(self):
+        """变更内容像导航文本时回退标题。"""
+        result = _build_highlight_summary(
+            "权益变更",
+            {"变更内容": "银行卡 贵宾 加入收藏 兴业银行信用卡 在线申请信用卡 产品介绍 白金卡系列 标准卡系列 主题卡系列"},
+            raw_title="关于兴业银行信用卡积分规则调整的公告",
+        )
+        assert result == "关于兴业银行信用卡积分规则调整的公告"
 
     def test_announcement(self):
         """公告 → 消息内容"""

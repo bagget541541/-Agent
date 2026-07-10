@@ -42,12 +42,16 @@ DEFAULT_VISION_MODEL = "mimo-v2.5"  # 通用视觉模型；使用 OpenRouter 或
 def _load_llm_config() -> dict:
     """读取共享 LLM 配置，返回 (api_key, api_base, vision_model)。"""
     cfg = {}
-    if os.path.exists(LLM_CONFIG_FILE):
-        try:
-            with open(LLM_CONFIG_FILE, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-        except Exception:
-            pass
+    try:
+        from common.llm_client import _load_file_config
+        cfg = _load_file_config() or {}
+    except Exception:
+        if os.path.exists(LLM_CONFIG_FILE):
+            try:
+                with open(LLM_CONFIG_FILE, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except Exception:
+                pass
     return {
         "api_key": cfg.get("api_key") or os.environ.get("LLM_API_KEY", ""),
         "api_base": cfg.get("api_base") or os.environ.get("LLM_API_BASE", DEFAULT_API_BASE),

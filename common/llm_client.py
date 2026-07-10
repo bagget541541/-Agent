@@ -92,6 +92,51 @@ _CONFIG_FILE_PATH = os.path.expanduser("~/.llm_config.json")
 _CONFIG_PRINTED = False
 
 
+def _find_project_root(start: Optional[str] = None) -> Optional[str]:
+    """向上查找项目根目录。"""
+    search = start or os.path.dirname(os.path.abspath(__file__))
+    for _ in range(6):
+        if os.path.isdir(os.path.join(search, ".git")):
+            return search
+        parent = os.path.dirname(search)
+        if parent == search:
+            break
+        search = parent
+    return None
+
+
+def _load_apikey_txt_config() -> Optional[dict]:
+    """从项目根目录 apikey.txt 读取配置。
+
+    兼容两行格式：
+    1. api_key
+    2. api_base
+    """
+    root = _find_project_root()
+    if not root:
+        return None
+
+    path = os.path.join(root, "apikey.txt")
+    if not os.path.isfile(path):
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except Exception:
+        return None
+
+    if not lines:
+        return None
+
+    api_key = lines[0]
+    api_base = lines[1] if len(lines) >= 2 else ""
+    model = os.environ.get("LLM_MODEL", "")
+    if not api_key:
+        return None
+    return {"api_key": api_key, "api_base": api_base, "model": model}
+
+
 # ── .env 加载（简化版，零外部依赖） ─────────────────
 
 def _load_dotenv() -> None:
@@ -177,6 +222,11 @@ def _load_file_config() -> Optional[dict]:
     兼容 scorer.py 的配置格式：
         {"api_key": "sk-...", "api_base": "https://api.deepseek.com", "model": "deepseek-chat"}
     """
+    # 项目根目录 apikey.txt（优先于历史 ~/.llm_config.json，便于覆盖过期配置）
+    txt_cfg = _load_apikey_txt_config()
+    if txt_cfg:
+        return txt_cfg
+
     if os.path.isfile(_CONFIG_FILE_PATH):
         try:
             with open(_CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
