@@ -19,6 +19,9 @@
   - `tests/test_common/test_display_fields.py`
   - `tests/test_common/test_llm_client_integration.py`
   - `tests/test_wechat_extractor/test_fetch.py`
+- **成稿修正**：
+  - 重新修正 `data/Weekly_Report_2026年7月第2周.md` 中两条兴业银行公告的标题、亮点、结构化信息与原文摘要
+  - 说明：归档 `data/archive/2026/07/2026年7月第2周/batch.json` 仍保留旧污染数据，若仅按该归档重生成成稿会再次覆盖人工修正
 
 ## v0.20.1 — 2026-07-10
 
