@@ -7,6 +7,8 @@
   - 从多银行官网公告列表页抓取公告
   - 智能过滤低价值内容（数据库维护、电话更新等）
   - 可配置时间范围（只抓取近期公告）
+  - 列表结构变化时按详情 URL 规则兜底发现公告
+  - 列表日期缺失时从详情页二次识别日期
   - 自动识别分类（新卡/活动/权益变更/公告）
   - 直接输出 CreditCardBatch 标准格式 JSON
 
@@ -133,6 +135,8 @@ class BankConfig:
     # URL 规则
     url_prefix_required: str = ""                # 链接必须包含此前缀（过滤非公告链接）
     url_prefix_skip: list = field(default_factory=lambda: ["#", "javascript"])  # 跳过链接
+    detail_url_pattern: str = ""                 # 详情链接兜底正则（列表 DOM 结构变化时使用）
+    max_fallback_links: int = 50                 # 兜底扫描最多保留链接数
 
     def __post_init__(self):
         if not self.short_name:
@@ -181,6 +185,7 @@ BANK_CONFIGS["邮政储蓄银行"] = BankConfig(
     detail_date_selector=".article-date, .date",
     detail_content_selector=".article-content, .content, .maintext",
     url_prefix_required="https://www.psbc.com/cn/grfw/xyk/ywgg_258",
+    detail_url_pattern=r"/2026\d{2}/t\d{8}_\d+\.html$",
 )
 
 
@@ -216,6 +221,7 @@ BANK_CONFIGS["中信银行"] = BankConfig(
     detail_title_selector="h1, .title, .article-title",
     detail_date_selector=".date, .time, .article-date",
     detail_content_selector=".content, .article-content, .detail-content",
+    detail_url_pattern=r"/gonggao/news_\d{6}\.shtml$",
 )
 
 # ── 以下为从 banks_parser_v2.py 迁移的银行配置（排除恒丰/光大/工商） ──
@@ -231,6 +237,7 @@ BANK_CONFIGS["华夏银行"] = BankConfig(
     title_selector=("a", "text"),
     date_selector=("span.date, .time, td:nth-child(2)", "text"),
     date_format="%Y-%m-%d",
+    detail_url_pattern=r"/card/cn/khfw/zygg/\d{4}/\d{2}/\d+\.shtml$",
 )
 
 # 浦发银行（banks_parser_v2 使用 Selenium，此处以 requests 尝试）
@@ -823,6 +830,8 @@ def _extract_date(text: str, last: bool = False) -> str:
         r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})",
         r"(\d{4})年(\d{1,2})月(\d{1,2})日?",
         r"(\d{4})\.(\d{1,2})\.(\d{1,2})",
+        # 中信公告 URL：news_260709.shtml
+        r"(?:news[_-])?(\d{2})(\d{2})(\d{2})(?=\.(?:shtml|html)(?:$|[?#]))",
     ]
 
     if not last:
@@ -830,6 +839,8 @@ def _extract_date(text: str, last: bool = False) -> str:
             match = re.search(pat, text)
             if match:
                 year, month, day = match.groups()
+                if len(year) == 2:
+                    year = f"20{year}"
                 return f"{year}-{int(month):02d}-{int(day):02d}"
         return ""
 
@@ -837,6 +848,8 @@ def _extract_date(text: str, last: bool = False) -> str:
     for pat in patterns:
         for match in re.finditer(pat, text):
             year, month, day = match.groups()
+            if len(year) == 2:
+                year = f"20{year}"
             candidates.append((match.start(), f"{year}-{int(month):02d}-{int(day):02d}"))
 
     if not candidates:
@@ -856,6 +869,49 @@ def build_item(bank: str, title: str, date: str, url: str) -> dict:
         "bank": bank,
         "url": url,
     }
+
+
+def _fallback_detail_links(soup, bank: BankConfig, base_url: str) -> list[dict]:
+    """扫描全页面详情链接，绕过银行改版导致的 li/tr 选择器失效。"""
+    if not bank.detail_url_pattern:
+        return []
+
+    pattern = re.compile(bank.detail_url_pattern, re.I)
+    results = []
+    seen = set()
+    for link in soup.find_all("a", href=True):
+        href = link.get("href", "").strip()
+        full_url = urljoin(base_url, href)
+        if full_url in seen or not pattern.search(full_url):
+            continue
+        if bank.url_prefix_required and bank.url_prefix_required not in full_url:
+            continue
+
+        row = link.parent
+        context = row.get_text(" ", strip=True) if row else ""
+        # 优先使用链接/邻近文本中的日期，无法识别时让详情页补日期。
+        date = _extract_date(context, last=True) or _extract_date(full_url, last=True)
+        title = _clean_title(link.get("title") or link.get_text(" ", strip=True))
+        if len(title) < 6:
+            title = _clean_title(context)
+        if not title or bank.is_low_value(title, context):
+            continue
+        results.append({"title": title, "url": full_url, "date_str": date})
+        seen.add(full_url)
+        if len(results) >= bank.max_fallback_links:
+            break
+    return results
+
+
+def _merge_fallback_links(items: list[dict], soup, bank: BankConfig, url: str) -> list[dict]:
+    """将结构化列表解析结果与全页面链接兜底结果合并去重。"""
+    merged = list(items)
+    existing = {x.get("url") for x in merged}
+    for item in _fallback_detail_links(soup, bank, url):
+        if item["url"] not in existing:
+            merged.append(item)
+            existing.add(item["url"])
+    return merged
 
 
 def _parse_abc_promo(session, bank, url):
@@ -959,6 +1015,7 @@ def _parse_psbc(session, bank, url):
 
             items.append(build_item(bank.name, title, date, full_url))
 
+        items = _merge_fallback_links(items, soup, bank, url)
         seen = set()
         unique = []
         for item in items:
@@ -1013,6 +1070,7 @@ def _parse_static_reference(session, bank, url):
 
             items.append({"title": title, "url": full_url, "date_str": date})
 
+        items = _merge_fallback_links(items, soup, bank, url)
         seen = set()
         unique = []
         for item in items:
@@ -1323,6 +1381,9 @@ def fetch_list_page(bank: BankConfig) -> list[dict]:
             "date_str": date_str,
         })
 
+    # 列表结构变化时，仍扫描符合公告 URL 规则的详情链接。
+    results = _merge_fallback_links(results, soup, bank, bank.list_url)
+
     # 去重
     seen_urls = set()
     unique = []
@@ -1475,8 +1536,7 @@ def scrape_bank(
     for e in entries:
         dt = _parse_date(e["date_str"], bank.date_format) if e["date_str"] else None
         e["_parsed_date"] = dt
-        if bank.name in STRICT_DATE_BANKS and not dt:
-            continue
+        # 列表页日期可能缺失（华夏改版页面常见），保留候选并在详情页二次识别。
         if dt:
             if dt < since:
                 continue
@@ -1534,6 +1594,13 @@ def scrape_bank(
         if bank.name in STRICT_DATE_BANKS and not pub_date:
             print("跳过：缺少有效日期")
             continue
+
+        # 日期以详情页为准，避免列表页日期为空或取到页面其他日期。
+        if pub_date:
+            detail_dt = datetime.strptime(pub_date, "%Y.%m.%d")
+            if detail_dt < since or (until and detail_dt > until):
+                print("⏭ 详情日期超出范围")
+                continue
 
         print(f"✅ [{category}] 日期={pub_date} 正文={len(detail['content'])}字")
 

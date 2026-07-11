@@ -53,3 +53,19 @@ def test_cleanup_detail_content_keeps_real_cib_announcement_body():
     assert cleaned.startswith("尊敬的客户：")
     assert "调整《兴业银行信用卡积分活动细则》中积分兑换部分内容" in cleaned
     assert "在线申请信用卡" not in cleaned
+
+
+def test_extract_date_supports_citic_compact_url_date():
+    assert website_scraper._extract_date("https://creditcard.citicbank.cn/gonggao/news_260709.shtml") == "2026-07-09"
+
+
+def test_fallback_links_finds_hxb_detail_when_list_item_selector_changes():
+    soup = website_scraper.BeautifulSoup(
+        '<div class="new-row"><a href="/card/cn/khfw/zygg/2026/07/138840.shtml">关于信用卡服务调整的公告</a></div>',
+        "html.parser",
+    )
+    bank = website_scraper.BANK_CONFIGS["华夏银行"]
+    items = website_scraper._fallback_detail_links(
+        soup, bank, "https://creditcard.hxb.com.cn/card/cn/khfw/zygg/index.shtml"
+    )
+    assert any(item["url"].endswith("/138840.shtml") for item in items)
