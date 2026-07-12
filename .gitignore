@@ -24,6 +24,10 @@ env/
 .coverage
 htmlcov/
 .pytest_cache/
+test_output/
+test_self_webpage.py
+test_webpage_selfcheck.py
+Readme.md.tmp
 
 # OS
 Thumbs.db
@@ -32,8 +36,15 @@ Thumbs.db
 # Generated / Output files (not dirs)
 Output
 Generate
+Markdown
 err.txt
 out.txt
+data/merge_test_*.docx
+data/merge_test_*.json
+data/merge_test_*.md
+
+# Local JavaScript dependencies
+node_modules/
 
 # Data artifacts — generated at runtime, not committed
 data/archive/
