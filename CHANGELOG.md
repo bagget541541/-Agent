@@ -4,6 +4,11 @@
 
 ### Mode E：公众号发布 HTML
 
+- 发布稿优化：自动生成文章标题，并将编辑摘要/主题整合压缩为总量、分类数量和三条以内的重点观察
+- 发布稿隐藏来源、方法、行动建议、来源清单及内部声明等编辑过程内容
+- 发布稿末尾新增精简的“原文链接”模块，按文章标题集中展示可点击链接
+- 同步更新 README 与 Mode D 设计文档，明确 Mode E 发布稿流程
+- 支持通过 --title 覆盖自动生成标题
 - 将 Markdown → 公众号可粘贴 HTML 独立为 Mode E
 - run.bat 新增 [E] WeChat publish mode
 - 默认读取 data/mode_d_merged.md，自动生成公众号粘贴版 HTML 和元数据 JSON

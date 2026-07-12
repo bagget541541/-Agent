@@ -1,6 +1,7 @@
 {
   "source": "D:\\ckl\\个人\\bat\\project_20260516_084851\\projects\\data\\mode_d_merged.md",
-  "title": "公众号文章合并点评稿",
+  "title": "信用卡资讯精选｜积分权益调整与AI联名观察",
   "output": "D:\\ckl\\个人\\bat\\project_20260516_084851\\projects\\data\\mode_d_merged_公众号粘贴版.html",
-  "embed_images": false
+  "embed_images": false,
+  "publish_mode": "compact_editorial"
 }
