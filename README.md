@@ -2,7 +2,7 @@
 
 > 全自动抓取 → 分类 → 合并 → 出报告 → 持卡建议 → 归档知识库
 >
-> 支持三种模式：**Mode A** 全流程 / **Mode B** 多文档整合 / **Mode C** 仅数据处理（跳过持卡分析+归档）
+> 支持五种模式：**Mode A** 全流程 / **Mode B** Word 多文档整合 / **Mode C** 仅数据处理 / **Mode D** Markdown 合并点评整合 / **Mode E** 公众号发布 HTML
 
 将信用卡周报的产出流程完全 **agent 化**，一句话触发完整流水线，归档数据沉淀为可检索的知识库。
 
@@ -103,6 +103,19 @@ python _agent.py --archive-only
         │   ├── 提取图片并保留
         │   ├── LLM 整体分析生成持卡建议
         │   └── 输出整合版 Word 文档
+        │
+        ├── Mode D: Markdown 编辑模式 ─────────────────────
+        │   │
+        │   ├── 合并 Markdown 条目并标题去重
+        │   ├── 保留原文、点评、图片引用和来源
+        │   ├── 生成主题整合、交叉点评和行动建议
+        │   └── 输出 Markdown + 审计 JSON
+        │
+        ├── Mode E: 公众号发布 HTML ────────────────────────
+        │   │
+        │   ├── 将 Mode D 成稿转为公众号可粘贴 HTML
+        │   ├── 仅使用内联样式，不依赖 CSS/JS
+        │   └── 保留标题、表格、列表、引用、来源和图片占位
         │
         └── Mode C: 仅数据处理 ────────────────────────────
             │
@@ -298,6 +311,28 @@ python _agent.py --mode c                                   # 仅数据处理（
 - 输入银行官网抓取天数（默认7）
 - 生成 Markdown 周报，跳过持卡分析 + 归档
 - 图片自动过滤：跳过装饰图/纯色图/图标/分割线
+
+**Mode E: 公众号发布 HTML**
+- 默认读取 data/mode_d_merged.md
+- 默认输出 data/mode_d_merged_公众号粘贴版.html
+- 浏览器打开 HTML 后全选复制，粘贴到公众号编辑器
+- 图片源不可访问时显示上传占位，发布前需在公众号编辑器上传原图
+
+交互入口：运行 run.bat，选择 [E]。高级参数仍可直接调用：
+
+    python -X utf8 md_to_wechat.py data\mode_d_merged.md --output data\mode_d_merged_公众号粘贴版.html
+
+**Mode D: Markdown 合并点评整合**
+- 输入一份或多份 Markdown 文件
+- 按二级标题识别资讯条目，标题规范化去重
+- 保留原文事实、点评、来源和图片引用
+- 生成类别统计、主题整合、交叉点评和行动建议
+- 默认生成 `data/mode_d_merged.md` 与同名审计 JSON
+- 可追加 `--llm` 使用统一 LLM 客户端增强跨条目点评
+
+命令行示例：
+
+    python -X utf8 md_merge.py --input data\公众号文章整理_20260708.md data\公众号文章整理_20260711.md --output data\mode_d_merged.md
 
 ### 全流程编排（高级）
 
@@ -559,6 +594,12 @@ SCORE_RULES = {
 - [x] 聚合 2 处图片滤波代码（utils.py 98行 + agent.py 63行→images.py 独立模块）
 - [x] 全量 420 passed，无回归
 
+### M11 — Markdown 编辑整合 ✅
+- [x] Mode D：Markdown 合并、点评与主题整合
+- [x] 证据层 / 合并层 / 编辑层三层输出
+- [x] 审计 JSON 与样例结果保留
+- [x] 可选 LLM 跨条目点评增强
+
 ---
 
 ## 修订记录
@@ -567,6 +608,7 @@ SCORE_RULES = {
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
+| v0.20.4 | 2026-07-12 | 新增 Mode D Markdown 合并点评整合：证据保留、标题去重、主题聚合、行动建议、审计 JSON、可选 LLM 增强；样例 2 份文档合并为 6 条资讯 |
 | v0.18 | 2026-06-04 | 新增 Step 1b 通用网页抓取（复用 news-analyzer extract_content.py），支持 `--webpage-url` CLI 参数 + `run.bat` 交互式输入，`run_pipeline.py` 修复破损导入路径 |
 | v0.17 | 2026-06-13 | 5 项修复（generate_docx 重写/Pillow 取消注释/eastAsia 双设/ensure_dir 导入/generate_merged_docx 入口）+ llm_review 银行去重 + rag_query 路径统一 + 经验教训沉淀 TOOLS.md + 420 全通过 |
 | v0.16 | 2026-06-12 | 统一 LLM 客户端（common/llm_client.py）聚合 3 处重复调用代码、图片生命周期管理（common/images.py）聚合 2 处图片滤波+新增内容哈希去重、336 测试全通过 |
@@ -619,4 +661,3 @@ python scripts\check_image_placement.py --input data\merge_test_0606.json --outp
 - 若执行自动 remap，会在替换前创建备份，例如 `data/merge_test_0606.json.pre_remap.bak`。
 - `validate_batch.py` 的检测规则见 `scripts/validate_batch.py`；疑似广告图会列入 `ad_like_images`。
 - `check_image_placement.py` 会尝试按标题匹配 H2 段落并比较 rId 顺序，若不一致会给出 `remap_to_doc_order` 建议供人工确认或自动修正。
-

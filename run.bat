@@ -27,9 +27,15 @@ echo   [C] Quick mode
 echo       WeChat URLs + Bank scraping (Step1-2) + Webpage URLs
 echo       -^> Step3-4 仅生成 Markdown+图片，跳过 Step5-6
 echo.
+echo   [D] Markdown editorial mode
+echo       合并 Markdown，保留原文并生成主题点评与行动建议
+echo.
+echo   [E] WeChat publish mode
+echo       将 Mode D 成稿转换为公众号可粘贴 HTML
+echo.
 echo   [Q] Exit
 echo.
-set /p choice=Enter choice (A/B/C/Q, default A):
+set /p choice=Enter choice (A/B/C/D/E/Q, default A):
 if "%choice%"=="" set choice=A
 
 if /i "%choice%"=="A" goto :mode_a
@@ -38,6 +44,10 @@ if /i "%choice%"=="B" goto :mode_b
 if /i "%choice%"=="b" goto :mode_b
 if /i "%choice%"=="C" goto :mode_c
 if /i "%choice%"=="c" goto :mode_c
+if /i "%choice%"=="D" goto :mode_d
+if /i "%choice%"=="d" goto :mode_d
+if /i "%choice%"=="E" goto :mode_e
+if /i "%choice%"=="e" goto :mode_e
 if /i "%choice%"=="Q" goto :end
 if /i "%choice%"=="q" goto :end
 
@@ -192,6 +202,39 @@ if not "%wechat_urls%"=="" set args=%args% --wechat-url %wechat_urls%
 if not "%webpage_urls%"=="" set args=%args% --webpage-url %webpage_urls%
 echo python _agent.py %args%
 python -X utf8 _agent.py %args%
+goto :done
+
+:mode_d
+echo.
+echo ============================================================
+echo   Mode D: Markdown Editorial Merge
+echo ============================================================
+echo.
+echo Example: data\公众号文章整理_20260708.md data\公众号文章整理_20260711.md
+echo.
+set /p d_files=Enter Markdown path(s) (blank uses the two sample files):
+if "%d_files%"=="" set "d_files=data\公众号文章整理_20260708.md data\公众号文章整理_20260711.md"
+set /p d_output=Output filename (blank: data\mode_d_merged.md):
+if "%d_output%"=="" set "d_output=data\mode_d_merged.md"
+python -X utf8 md_merge.py --input %d_files% --output "%d_output%"
+goto :done
+
+:mode_e
+echo.
+echo ============================================================
+echo   Mode E: WeChat Publish HTML
+echo ============================================================
+echo.
+echo Mode E 默认处理 data\mode_d_merged.md
+echo.
+set /p e_input=Input Markdown (blank: data\mode_d_merged.md):
+if "%e_input%"=="" set "e_input=data\mode_d_merged.md"
+set /p e_output=Output HTML (blank: auto-generated):
+if not "%e_output%"=="" (
+    python -X utf8 md_to_wechat.py "%e_input%" --output "%e_output%"
+) else (
+    python -X utf8 md_to_wechat.py "%e_input%"
+)
 goto :done
 
 :done

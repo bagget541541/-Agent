@@ -1,5 +1,33 @@
 # 修订记录
 
+## v0.20.5 — 2026-07-12
+
+### Mode E：公众号发布 HTML
+
+- 将 Markdown → 公众号可粘贴 HTML 独立为 Mode E
+- run.bat 新增 [E] WeChat publish mode
+- 默认读取 data/mode_d_merged.md，自动生成公众号粘贴版 HTML 和元数据 JSON
+- 交互入口隐藏图片映射等高级参数，降低使用复杂度
+- HTML 使用纯内联样式，支持标题、表格、列表、引用、链接和图片占位
+
+## v0.20.4 — 2026-07-12
+
+### Mode D：Markdown 合并、点评与整合
+
+- 新增根级入口 md_merge.py，支持一份或多份 Markdown 文档合并
+- 采用“证据层 → 合并层 → 编辑层”三层结构：
+  - 保留原文事实、点评、来源、图片引用和条目审计信息
+  - 按标题规范化键去重，并生成来源映射 JSON
+  - 生成类别统计、主题整合、交叉点评和行动建议
+- run.bat 新增 [D] Markdown editorial mode
+- 支持 --llm 调用统一 LLM 客户端增强跨条目点评；不可用时自动降级为本地规则结果
+- 新增 docs/mode-d-design.md 和 tests/test_md_merge.py
+- 使用 data/公众号文章整理_20260708.md、data/公众号文章整理_20260711.md 验证：
+  - 2 份 Markdown → 6 条去重资讯
+  - 结果保留于 data/mode_d_merged.md
+  - 审计信息保留于 data/mode_d_merged.json
+- 已完成 Python 编译检查和手工断言验证；当前环境未安装 pytest
+
 ## v0.20.3 — 2026-07-11
 
 ### Mode C 官网公告发现增强
