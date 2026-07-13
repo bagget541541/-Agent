@@ -251,9 +251,9 @@ BANK_CONFIGS["浦发银行"] = BankConfig(
     title_selector=(".newsright_newsb a", "title"),
     date_selector=(".newsright_newsc", "text"),
     date_format="%Y-%m-%d",
-    detail_title_selector="h1, .title, .article-title",
+    detail_title_selector=".main_body_left_noticetitle, h1, .title, .article-title",
     detail_date_selector=".date, .time, .article-date",
-    detail_content_selector=".content, .article-content, .detail-content, .newsright_main",
+    detail_content_selector=".main_body_left_noticecon, .content, .article-content, .detail-content, .newsright_main",
 )
 
 # 南京银行（banks_parser_v2 用 requests + .erji_lib 选择器）
@@ -1173,28 +1173,99 @@ def _parse_spdb(driver, bank_url: str) -> list[dict]:
 
 
 def _parse_bankcomm(driver, bank_url: str) -> list[dict]:
-    """交通银行：等待 .cont .item 渲染后解析。"""
+    """交通银行：优先解析旧 DOM，改版时回退扫描带日期的公告链接。"""
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.support.ui import WebDriverWait
+    import time
     driver.get(bank_url)
-    WebDriverWait(driver, 20).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, ".cont .item"))
-    )
+    WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    time.sleep(2)
     soup = BeautifulSoup(driver.page_source, "html.parser")
     results = []
+    seen = set()
+
+    def add_item(title, date, href):
+        title = _clean_title(title)
+        date = _extract_date(date or "")
+        if not title or len(title) < 6 or not date:
+            return
+        item_url = urljoin(bank_url, href) if href else bank_url
+        key = (title, date, item_url)
+        if key not in seen:
+            seen.add(key)
+            results.append({"title": title, "url": item_url, "date_str": date})
+
     for row in soup.select(".cont-box .cont .item"):
         title_link = row.select_one(".left a[href]") or row.find("a", href=True)
         date_tag = row.select_one(".right")
-        if not title_link or not date_tag:
-            continue
-        title = _clean_title(title_link.get("title") or title_link.get_text(" ", strip=True))
-        date = _extract_date(date_tag.get_text(" ", strip=True))
-        if not title or not date:
-            continue
-        href = title_link.get("href", "")
-        results.append({"title": title, "url": urljoin(bank_url, href) if href else bank_url, "date_str": date})
+        if title_link:
+            add_item(title_link.get("title") or title_link.get_text(" ", strip=True),
+                     date_tag.get_text(" ", strip=True) if date_tag else row.get_text(" ", strip=True),
+                     title_link.get("href", ""))
+
+    # 交行改版后可能仍有公告链接，但不再使用 .cont-box .cont .item。
+    # 从链接父节点及祖先节点中寻找日期，避免把导航链接误识别为公告。
+    if not results:
+        for link in soup.find_all("a", href=True):
+            href = link.get("href", "").strip()
+            if not href or href.startswith(("#", "javascript:", "mailto:")):
+                continue
+            node = link.parent
+            context = ""
+            for _ in range(3):
+                if not node:
+                    break
+                context = node.get_text(" ", strip=True)
+                if _extract_date(context):
+                    break
+                node = node.parent
+            add_item(link.get("title") or link.get_text(" ", strip=True), context, href)
     return results
+
+
+def _bankcomm_api_url(bank_url: str) -> str:
+    """交通银行公告 Vue 页面对应的后端接口。"""
+    from urllib.parse import urlparse
+    parsed = urlparse(bank_url)
+    return f"{parsed.scheme}://{parsed.netloc}/content/api/notice.json"
+
+
+def _parse_bankcomm_api(session, bank: BankConfig, url: str) -> list[dict]:
+    """交通银行：从 notice.json 读取公告，页面 DOM 不含详情链接。"""
+    api_url = _bankcomm_api_url(url)
+    payload = {
+        "year": "",
+        "month": "",
+        "pageSize": 50,
+        "pageNo": 1,
+        "tab": "1",
+        "preview": "",
+    }
+    response = session.post(
+        api_url,
+        json=payload,
+        timeout=30,
+        headers={"Referer": url, "Content-Type": "application/json"},
+    )
+    response.raise_for_status()
+    data = response.json().get("data") or {}
+    results = []
+    for row in data.get("list") or []:
+        title = _clean_title(row.get("title") or row.get("summaryMsg") or "")
+        date = _extract_date(row.get("time") or row.get("publishTime") or "")
+        notice_id = str(row.get("id") or row.get("noticeId") or "").strip()
+        if not title or not date or not notice_id:
+            continue
+        detail_url = (
+            f"{url.split('?')[0].replace('notice.html', 'contentDetail')}"
+            f"?id={notice_id}&menuId=9999&listId=9999"
+        )
+        results.append({"title": title, "url": detail_url, "date_str": date})
+    return results
+
+
+_SPECIAL_LIST_FETCHERS["交通银行"] = _parse_bankcomm_api
 
 
 def _parse_bob(driver, bank_url: str) -> list[dict]:
@@ -1395,15 +1466,79 @@ def fetch_list_page(bank: BankConfig) -> list[dict]:
     return unique
 
 
+def _fetch_detail_with_selenium(url: str) -> Optional[BeautifulSoup]:
+    """请求失败（如旧 TLS/JS 页面）时，用浏览器取得渲染后的 DOM。"""
+    if not HAS_SELENIUM:
+        return None
+    driver = None
+    try:
+        options = ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument(f"--user-agent={DEFAULT_UA}")
+        driver = webdriver.Chrome(options=options)
+        driver.set_page_load_timeout(30)
+        driver.get(url)
+        import time as _time
+        _time.sleep(2)
+        return BeautifulSoup(driver.page_source, "html.parser")
+    except Exception as exc:
+        print(f"  [Fallback Selenium Error] {exc}")
+        return None
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
+def _fetch_bankcomm_detail_api(url: str, bank: BankConfig) -> Optional[dict]:
+    """交通银行详情页：从列表接口返回的 details 字段提取正文。"""
+    from urllib.parse import parse_qs, urlparse
+    notice_id = (parse_qs(urlparse(url).query).get("id") or [""])[0]
+    if not notice_id:
+        return None
+    session = create_session(bank)
+    try:
+        response = session.post(
+            _bankcomm_api_url(bank.list_url),
+            json={"year": "", "month": "", "pageSize": 50, "pageNo": 1, "tab": "1", "preview": ""},
+            timeout=30,
+            headers={"Referer": bank.list_url, "Content-Type": "application/json"},
+        )
+        response.raise_for_status()
+        rows = (response.json().get("data") or {}).get("list") or []
+        row = next((x for x in rows if str(x.get("id") or x.get("noticeId")) == notice_id), None)
+        if not row:
+            return None
+        html = row.get("details") or ""
+        return {
+            "title": _clean_title(row.get("title") or row.get("summaryMsg") or ""),
+            "date_str": row.get("time") or row.get("publishTime") or "",
+            "content": BeautifulSoup(html, "html.parser").get_text("\n", strip=True),
+            "noise_info": {"removed_selectors": [], "markers_used": {}},
+        }
+    except (requests.RequestException, ValueError, TypeError):
+        return None
+
+
 def fetch_detail_page(url: str, bank: BankConfig) -> Optional[dict]:
     """抓取公告详情页，返回 {title, date_str, content}。"""
+    if bank.name == "交通银行":
+        api_detail = _fetch_bankcomm_detail_api(url, bank)
+        if api_detail:
+            return api_detail
     session = create_session(bank)
     try:
         resp = session.get(url, timeout=30)
         _set_best_encoding(resp, bank.encoding)
         soup = BeautifulSoup(resp.text, "html.parser")
     except requests.RequestException:
-        return None
+        # 浦发等站点的详情页可能拒绝 Python TLS 握手；不要在这里直接丢弃。
+        soup = _fetch_detail_with_selenium(url)
+        if soup is None:
+            return None
 
     # 标题（优先详情页）
     title_el = soup.select_one(bank.detail_title_selector)
@@ -1450,20 +1585,9 @@ def fetch_detail_page(url: str, bank: BankConfig) -> Optional[dict]:
             # 尝试 Selenium 渲染并重解析
             try:
                 print("  [Fallback] Using Selenium to render detail page...", end=" ")
-                options = ChromeOptions()
-                options.add_argument("--headless=new")
-                options.add_argument("--no-sandbox")
-                options.add_argument(f"--user-agent={DEFAULT_UA}")
-                service = None
-                driver = webdriver.Chrome(options=options)
-                driver.set_page_load_timeout(30)
-                driver.get(url)
-                # 简单等待，让页面完成渲染（可根据需要替换为显式等待）
-                import time as _time
-                _time.sleep(2)
-                rendered = driver.page_source
-                driver.quit()
-                soup2 = BeautifulSoup(rendered, "html.parser")
+                soup2 = _fetch_detail_with_selenium(url)
+                if soup2 is None:
+                    raise RuntimeError("rendered page unavailable")
                 content_el2 = soup2.select_one(bank.detail_content_selector)
                 if content_el2:
                     for tag in content_el2(["script", "style", "nav", "footer", "noscript"]):
