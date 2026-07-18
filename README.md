@@ -312,6 +312,21 @@ python _agent.py --mode c                                   # 仅数据处理（
 - 生成 Markdown 周报，跳过持卡分析 + 归档
 - 图片自动过滤：跳过装饰图/纯色图/图标/分割线
 
+**Mode E+: docx 整合点评 → 公众号 HTML**
+
+针对"信用卡资讯整合点评"类 docx（四段式：标题 / 来源 / 核心内容 / 点评 + 本期总结 + 原始链接），直接转成公众号编辑器可粘贴的 HTML 片段，复用 `md_to_wechat.py` 的内联渲染、主题配色与样式骨架：
+
+```bash
+python docx_to_wechat.py "公众号文章整合点评_0714+0717.md.docx" \
+    --output "公众号粘贴版.html" --title "自定义标题"
+```
+
+解析逻辑：
+- **四段式识别**：`来源：` / `核心内容：` / `点评：` 三种前缀回填当前条目；其余非空行视为新条目标题；首段非前缀文本识别为文章总标题并跳过。
+- **本期总结区块**：`本期总结` 触发，后续 `•` 行转 `<ul>`。
+- **原始链接区块**：`原始链接` 触发，段内纯文本 URL 与 hyperlink 关系（`word/_rels/document.xml.rels`）按出现顺序配对，URL 去重，hyperlink 文本是 URL 本身/前缀时跳过。
+- **配色**：`COLORS` 含 `境外` / `返现` / `年费` / `世界杯` 等主题色，按标题+核心内容关键词匹配。
+
 **Mode E: 公众号发布 HTML**
 - 默认读取 data/mode_d_merged.md
 - 默认输出 data/mode_d_merged_公众号粘贴版.html
@@ -601,6 +616,12 @@ SCORE_RULES = {
 - [x] 证据层 / 合并层 / 编辑层三层输出
 - [x] 审计 JSON 与样例结果保留
 - [x] 可选 LLM 跨条目点评增强
+
+### M12 — docx 整合点评 → 公众号 HTML ✅
+- [x] 新增 `docx_to_wechat.py`：针对"信用卡资讯整合点评"类 docx（四段式标题/来源/核心内容/点评 + 本期总结 + 原始链接），直接转公众号可粘贴 HTML 片段
+- [x] 复用 `md_to_wechat.py` 的 `inline()` 内联渲染、主题配色、样式骨架
+- [x] 修复 `run.bat` 闪退：根因为 **LF-only 换行**（Git checkout 在 Windows 上把 CRLF 转成 LF），cmd.exe 解析 LF-only `.bat` 时把多行当一行、变量名当命令；改回 **UTF-8 + CRLF** 后菜单正常显示、stderr 归零
+- [x] 教训：`.bat` 在中文 Windows cmd.exe 下必须满足两个硬条件——**UTF-8 编码**（配 `chcp 65001`）+ **CRLF 换行**；GBK 转换是错误方向，会导致 `chcp 65001` 后中文 echo 反而乱码
 
 ---
 
