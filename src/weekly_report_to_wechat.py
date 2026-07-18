@@ -21,11 +21,18 @@ from __future__ import annotations
 import argparse
 import html
 import re
+import sys
 import zipfile
 from pathlib import Path
 
+# 兜底：确保项目根（src 的父目录）在 sys.path 中，避免从其他 CWD 运行时
+# `from src.docx_to_wechat import ...` 因找不到 src package 而失败
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 # 复用 docx_to_wechat 的基础能力
-from src.docx_to_wechat import parse_docx, _read_rels, esc, inline, color_for
+from src.docx_to_wechat import parse_docx, _read_rels, esc, inline
 
 
 # ── 银行识别 + 标签配色 ──────────────────────────────────────────────
@@ -312,9 +319,9 @@ def _classify_normal(text: str, links: list[dict]) -> dict:
 
 # ── HTML 渲染（参考 flyertrss 公众号粘贴版风格）──────────────────────
 def render_shell(body: str) -> str:
-    """外壳 + 字体 + 行高。"""
+    """外壳 + 字体 + 行高。max-width 与 docx_to_wechat.py 保持一致。"""
     return (
-        f'<div style="max-width:640px;margin:0 auto;background:#fff;'
+        f'<div style="max-width:680px;margin:0 auto;background:#fff;'
         f'padding:20px 16px 30px;font-family:\'PingFang SC\','
         f'\'Microsoft YaHei\',sans-serif;line-height:1.8">{body}</div>'
     )
@@ -513,31 +520,6 @@ def render_links_summary(all_links: list[dict]) -> str:
     )
 
 
-def render_ai_disclaimer() -> str:
-    """AI 生成声明。"""
-    return (
-        f'<div style="margin-top:12px;padding:8px 12px;background:#fff7ed;'
-        f'border-radius:6px;border:1px solid #fed7aa;text-align:center">'
-        f'<p style="font-size:11px;color:#9a3412;line-height:1.6">'
-        f'本内容由 AI 生成整理，请遵循相关法律法规及'
-        f'《人工智能生成合成内容标识办法》使用与传播。</p></div>'
-    )
-
-
-def render_cta() -> str:
-    """互动 CTA 收尾。"""
-    return (
-        f'<div style="margin-top:24px;padding:16px;background:#0f172a;'
-        f'border-radius:10px;text-align:center;color:#fff">'
-        f'<p style="font-size:14px;font-weight:500;margin-bottom:4px">'
-        f'💬 本期哪条权益/活动最值得关注？评论区聊聊</p>'
-        f'<p style="font-size:13px;margin-top:8px">关注 '
-        f'<strong>飞客信用卡周报</strong></p>'
-        f'<p style="font-size:11px;color:#94a3b8;margin-top:2px">'
-        f'转发给需要的朋友，一起避坑省钱</p></div>'
-    )
-
-
 def render_html(struct: dict, docx_path: Path) -> str:
     """主渲染入口。"""
     title = struct["title"] or docx_path.stem
@@ -546,7 +528,6 @@ def render_html(struct: dict, docx_path: Path) -> str:
 
     # 收集所有条目的链接，供文末汇总
     all_links: list[dict] = []
-    item_count = 0
 
     body_parts: list[str] = []
     body_parts.append(render_title_block(title, subtitle))
@@ -580,7 +561,6 @@ def render_html(struct: dict, docx_path: Path) -> str:
             body_parts.append(_render_block(b, {"blocks": [], "links": []}))
         # 条目卡片
         for item in cat["items"]:
-            item_count += 1
             body_parts.append(render_item_card(item, cat))
             # 收集 links：优先 item["links"]，再从 blocks 里抓 URL
             for lnk in item.get("links", []):
@@ -600,21 +580,13 @@ def render_html(struct: dict, docx_path: Path) -> str:
     # 文末链接汇总
     body_parts.append(render_links_summary(all_links))
 
-    # AI 声明 + CTA
-    body_parts.append(render_ai_disclaimer())
-    body_parts.append(render_cta())
-
     body = "".join(body_parts)
     return render_shell(body)
 
 
 def convert(docx_path: Path, output: Path | None = None) -> Path:
-    with zipfile.ZipFile(docx_path) as zf:
-        xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
-        rel_map = _read_rels(zf)
-
-    paras_xml = re.findall(r"<w:p\b[^>]*>.*?</w:p>", xml, re.S)
-    paras = [_parse_paragraph(p, rel_map) for p in paras_xml]
+    # 复用 docx_to_wechat.parse_docx()：一次解 zip + XML，返回带 style/links/has_img 的段落
+    paras = parse_docx(docx_path)
 
     struct = parse_structure(paras)
     fragment = render_html(struct, docx_path)

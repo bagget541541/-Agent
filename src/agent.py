@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile
@@ -37,6 +38,14 @@ from common.review import export_review_queue
 from common.article_envelope import build_article_envelope
 from common.topic_splitter import detect_multi_topic, split_article_into_topics, detect_multi_topic_from_raw_text
 from rag_query import query_for_suggestions
+
+
+# 低价值活动关键词（Step6 过滤 + run_pipeline 标记共用）
+LOW_VALUE_KEYWORDS = (
+    "首绑赠", "立减券", "洗车券",
+    "首单立减", "卡号订制",
+    "满30返", "满200返", "达标礼",
+)
 
 
 def _item_to_mapping(item):
@@ -79,13 +88,22 @@ def _build_item_from_raw_text_topic(topic: dict, source_article: dict) -> dict:
 
 
 def _load_json_fallback(filepath: Path):
-    """尽量用多种编码读取 JSON。"""
+    """尽量用多种编码读取 JSON。
+
+    区分两类异常：
+    - UnicodeDecodeError：当前编码不匹配，继续尝试下一个编码
+    - json.JSONDecodeError：JSON 语法错误，多编码也救不了，直接返回 None
+    """
+    import json as _json
     for encoding in ("utf-8", "utf-8-sig", "gbk", "cp936"):
         try:
             with open(filepath, "r", encoding=encoding) as f:
-                return json.load(f)
-        except Exception:
+                return _json.load(f)
+        except UnicodeDecodeError:
             continue
+        except _json.JSONDecodeError as e:
+            print(f"  [Warn] JSON 语法错误（{filepath}，{encoding}）：{e}")
+            return None
     return None
 
 
@@ -1194,13 +1212,10 @@ def step6_append_suggestions(report_file: str, analysis: dict) -> str:
             cat_order = ['新卡', '权益变更', '活动', '公告']
             # 低价值活动标题集合（用于过滤持卡建议）
             _low_value_titles = set()
-            _low_val_kw = ["首绑赠", "立减券", "洗车券",
-                           "首单立减", "卡号订制",
-                           "满30返", "满200返", "达标礼"]
             for cat_data in cat_summary.values():
                 for it in cat_data.get("items", []):
                     t = it.get("title", "")
-                    if sum(1 for kw in _low_val_kw if kw in t) >= 1:
+                    if sum(1 for kw in LOW_VALUE_KEYWORDS if kw in t) >= 1:
                         _low_value_titles.add(t)
             cat_emoji = {'新卡': '🆕', '权益变更': '🔄', '活动': '🏷️', '公告': '📋'}
             cat_title = {'新卡': '新卡申请建议', '权益变更': '权益变更提醒', '活动': '活动参与建议', '公告': '重要公告'}
@@ -1304,8 +1319,7 @@ def step6_append_suggestions(report_file: str, analysis: dict) -> str:
                     doc.add_paragraph(f'{rank}. {label}{suffix}')
 
             # Phase 3: 同类卡对比
-            from collections import defaultdict as _ddict
-            scene_groups = _ddict(list)
+            scene_groups = defaultdict(list)
             for cat in ['新卡', '活动']:
                 for item in cat_summary.get(cat, {}).get('items', []):
                     ev = item.get('evaluation', {})
@@ -1514,6 +1528,118 @@ def _write_last_run(bank_days: int = 7):
         print(f"  [Warn] 写入 last_run.json 失败: {e}")
 
 
+def _enrich_fields(batch: CreditCardBatch, analysis: dict) -> None:
+    """Phase 1: 将 Step5 分析的富字段写回 batch.items。
+
+    优先按 item_id 匹配（最稳健），辅以 title 兜底；
+    匹配率 < 100% 时打印 warn。原地修改 batch。
+    """
+    if not (analysis and analysis.get('category_summary')):
+        return
+    enriched_count = 0
+    matched = 0
+    total_items = len(batch.items)
+    enriched_by_id: dict[str, dict] = {}
+    enriched_by_title: dict[str, dict] = {}
+    for cat_data in analysis['category_summary'].values():
+        for item_data in cat_data.get('items', []):
+            iid = item_data.get('item_id', '')
+            t = item_data.get('title', '')
+            if iid:
+                enriched_by_id[iid] = item_data
+            if t:
+                enriched_by_title[t] = item_data
+    from common.display_fields import generate_display_fields as _gdf
+    for item in batch.items:
+        enriched = enriched_by_id.get(item.item_id) or enriched_by_title.get(item.title, {})
+        if not enriched:
+            continue
+        matched += 1
+        ev = enriched.get('evaluation', {})
+        if not ev:
+            continue
+        ta = ev.get('target_audience', '')
+        if ta:
+            item.target_audience = ta
+        kb = ev.get('key_benefits', [])
+        if kb:
+            item.key_benefits = kb
+        fa = ev.get('fee_assessment', '')
+        if fa:
+            item.fee_assessment = fa
+        wa = ev.get('worth_applying', [])
+        if wa:
+            item.worth_applying = wa
+        pe = ev.get('priority_emoji', '')
+        if pe:
+            item.priority_emoji = pe
+            enriched_count += 1
+        # Phase 2+fix: 用富字段增强 highlight_summary（始终执行）
+        dr = _gdf(
+            bank=item.bank, category=item.category,
+            structured=item.structured, raw_title=item.raw_title,
+            raw_text=item.raw_text,
+            key_benefits=item.key_benefits,
+            fee_assessment=item.fee_assessment,
+        )
+        item.highlight_summary = dr["highlight_summary"]
+        # P0-2: 如果 highlight_summary 仍为空，从 title/key_benefits 生成 fallback
+        if not item.highlight_summary:
+            if item.key_benefits:
+                item.highlight_summary = "、".join(item.key_benefits[:3])
+            elif item.title:
+                item.highlight_summary = item.title[:80]
+    if enriched_count:
+        print(f"  [Phase1] Enriched {enriched_count} items with structured fields")
+    if matched < total_items:
+        print(
+            f"  [Warn] Phase1 enrichment match rate: {matched}/{total_items} "
+            f"({total_items - matched} items unmatched)"
+        )
+
+
+def _filter_noise(batch: CreditCardBatch) -> None:
+    """P0-3: 噪音过滤 — 移除"其他"类 + raw_text 过长截断 + 低价值活动标记。
+
+    原地修改 batch。
+    """
+    _items_before = len(batch.items)
+    # 1. 移除所有"其他"类（均为误分类或垃圾数据）
+    batch.items = [it for it in batch.items if it.category != "其他"]
+    # 2. raw_text 过长截断（>2000 字符的网页抓取噪音）
+    for it in batch.items:
+        if len(it.raw_text or "") > 2000:
+            it.raw_text = it.raw_text[:2000] + "..."
+    # 3. 同银行多条低价值活动合并标记（score <= 3 的小活动）
+    for it in batch.items:
+        if it.category == "活动":
+            txt = f"{it.title} {it.raw_text}"
+            if sum(1 for kw in LOW_VALUE_KEYWORDS if kw in txt) >= 1:
+                if not it.structured:
+                    it.structured = {}
+                it.structured["_low_value"] = True
+    _filtered = _items_before - len(batch.items)
+    if _filtered:
+        print(f"  [P0-3] Filtered {_filtered} noisy items (other category)")
+
+
+def _report_qa_feedback(report_file: str, *, skip_qa: bool, mode: str) -> None:
+    """Phase 4: 读取 qa_findings.json 并输出 C 类问题摘要 + 质量评分。"""
+    if not report_file or skip_qa or mode == "c":
+        return
+    try:
+        findings_file = Path(report_file).parent / "qa_findings.json"
+        if findings_file.exists():
+            findings = json.loads(findings_file.read_text(encoding="utf-8"))
+            quality_score = findings.get("quality_score", 0)
+            c_issues = findings.get("issues", {}).get("C", [])
+            if c_issues:
+                print(f"  [QA Feedback] {len(c_issues)} C类问题，建议优先处理")
+            print(f"  [QA Feedback] 质量评分: {quality_score}/100")
+    except Exception:
+        pass
+
+
 def run_pipeline(
     wechat_urls: list[str] = None,
     webpage_urls: list[str] = None,
@@ -1654,76 +1780,10 @@ def run_pipeline(
         )
 
     # Phase 1: Step 5 完成后，将富字段写回 batch.items
-    if analysis and analysis.get('category_summary'):
-        enriched_count = 0
-        # 通过 title 匹配，将 analysis 中的富字段回写到 batch.items
-        enriched_map = {}
-        for cat_data in analysis['category_summary'].values():
-            for item_data in cat_data.get('items', []):
-                t = item_data.get('title', '')
-                if t:
-                    enriched_map[t] = item_data
-        for item in batch.items:
-            enriched = enriched_map.get(item.title, {})
-            ev = enriched.get('evaluation', {})
-            if ev:
-                ta = ev.get('target_audience', '')
-                if ta:
-                    item.target_audience = ta
-                kb = ev.get('key_benefits', [])
-                if kb:
-                    item.key_benefits = kb
-                fa = ev.get('fee_assessment', '')
-                if fa:
-                    item.fee_assessment = fa
-                wa = ev.get('worth_applying', [])
-                if wa:
-                    item.worth_applying = wa
-                pe = ev.get('priority_emoji', '')
-                if pe:
-                    item.priority_emoji = pe
-                    enriched_count += 1
-                # Phase 2+fix: 用富字段增强 highlight_summary（始终执行）
-                from common.display_fields import generate_display_fields as _gdf
-                dr = _gdf(
-                    bank=item.bank, category=item.category,
-                    structured=item.structured, raw_title=item.raw_title,
-                    raw_text=item.raw_text,
-                    key_benefits=item.key_benefits,
-                    fee_assessment=item.fee_assessment,
-                )
-                item.highlight_summary = dr["highlight_summary"]
-                # P0-2: 如果 highlight_summary 仍为空，从 title/key_benefits 生成 fallback
-                if not item.highlight_summary:
-                    if item.key_benefits:
-                        item.highlight_summary = "、".join(item.key_benefits[:3])
-                    elif item.title:
-                        item.highlight_summary = item.title[:80]
-        if enriched_count:
-            print(f"  [Phase1] Enriched {enriched_count} items with structured fields")
+    _enrich_fields(batch, analysis)
 
     # P0-3: 噪音过滤 — 移除"其他"类 + raw_text 过长截断 + 低价值活动标记
-    _items_before = len(batch.items)
-    # 1. 移除所有"其他"类（均为误分类或垃圾数据）
-    batch.items = [it for it in batch.items if it.category != "其他"]
-    # 2. raw_text 过长截断（>2000 字符的网页抓取噪音）
-    for it in batch.items:
-        if len(it.raw_text or "") > 2000:
-            it.raw_text = it.raw_text[:2000] + "..."
-    # 3. 同银行多条低价值活动合并标记（score <= 3 的小活动）
-    _low_val_kw = ["首绑赠", "立减券", "洗车券", "首单立减", "卡号订制",
-                   "满30返", "满200返", "达标礼"]
-    for it in batch.items:
-        if it.category == "活动":
-            txt = f"{it.title} {it.raw_text}"
-            if sum(1 for kw in _low_val_kw if kw in txt) >= 1:
-                # 标记为低价值，报告中精简显示
-                if not it.structured:
-                    it.structured = {}
-                it.structured["_low_value"] = True
-    _filtered = _items_before - len(batch.items)
-    if _filtered:
-        print(f"  [P0-3] Filtered {_filtered} noisy items (other category)")
+    _filter_noise(batch)
 
     # Step 4: 生成报告 — Phase 1: 在 Step 5 之后，batch 已含富字段
     if mode == 'c':
@@ -1771,20 +1831,8 @@ def run_pipeline(
     else:
         print("\n[Skip] Step6.5 QA (no report file)")
 
-
-    # Phase 4: QA 反馈 — 读取 qa_findings.json 并输出 C 类问题摘要
-    if report_file and not skip_qa and mode != "c":
-        try:
-            findings_file = Path(report_file).parent / "qa_findings.json"
-            if findings_file.exists():
-                findings = json.loads(findings_file.read_text(encoding="utf-8"))
-                quality_score = findings.get("quality_score", 0)
-                c_issues = findings.get("issues", {}).get("C", [])
-                if c_issues:
-                    print(f"  [QA Feedback] {len(c_issues)} C类问题，建议优先处理")
-                print(f"  [QA Feedback] 质量评分: {quality_score}/100")
-        except Exception:
-            pass
+    # Phase 4: QA 反馈
+    _report_qa_feedback(report_file, skip_qa=skip_qa, mode=mode)
 
     # Step 7: 归档
     result.run_step(

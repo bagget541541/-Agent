@@ -18,7 +18,6 @@ import html
 import re
 import zipfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 # ── 主题色（沿用 md_to_wechat.py 思路，按关键词给标题/点评配色）──────────
 COLORS = {
@@ -37,10 +36,6 @@ DEFAULT_COLOR = "#475569"
 
 
 # ── docx 读取 ──────────────────────────────────────────────────────────
-W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-
-
 def _read_rels(zf: zipfile.ZipFile) -> dict[str, str]:
     """r:id -> 真实 URL"""
     try:
@@ -65,7 +60,10 @@ def _strip_tags(s: str) -> str:
 
 
 def parse_docx(path: Path) -> list[dict]:
-    """返回段落列表，每段含 text 和 hyperlinks (list of {url,text})."""
+    """返回段落列表，每段含 text / links / style / has_img。
+
+    其中 style 与 has_img 为可选字段（早期调用方仅用 text 与 links）。
+    """
     with zipfile.ZipFile(path) as zf:
         xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
         rel_map = _read_rels(zf)
@@ -74,6 +72,10 @@ def parse_docx(path: Path) -> list[dict]:
     paras_xml = re.findall(r"<w:p\b[^>]*>.*?</w:p>", xml, re.S)
     paragraphs: list[dict] = []
     for pxml in paras_xml:
+        # 段落样式（Title / Heading1 / Heading2 / ListBullet / normal）
+        style_m = re.search(r'<w:pStyle w:val="([^"]+)"', pxml)
+        style = style_m.group(1) if style_m else "normal"
+
         # 段内 hyperlink：可能带 r:id 指向外部 URL
         links: list[dict] = []
         for hl in re.finditer(r"<w:hyperlink\b[^>]*>(.*?)</w:hyperlink>", pxml, re.S):
@@ -94,8 +96,14 @@ def parse_docx(path: Path) -> list[dict]:
         # 段内纯文本
         t_text = "".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", pxml, re.S))
         full_text = _strip_tags(t_text).strip()
+        has_img = "<w:blip" in pxml or "<w:drawing" in pxml
         if full_text or links:
-            paragraphs.append({"text": full_text, "links": links})
+            paragraphs.append({
+                "text": full_text,
+                "links": links,
+                "style": style,
+                "has_img": has_img,
+            })
     return paragraphs
 
 
@@ -148,11 +156,6 @@ def _split_url_text(text: str) -> list[tuple[str, str]]:
         segs.append(("text", text[last:]))
     # 清理空 text
     return [(k, v.strip()) if k == "text" else (k, v) for k, v in segs if not (k == "text" and not v.strip())]
-
-
-def is_title_line(text: str) -> bool:
-    """标题行：『银行 - 卡名』或『银行 - 活动名』。"""
-    return bool(re.match(r"^.+?\s*-\s*.+$", text)) and not text.startswith(("来源", "核心内容", "点评", "本期", "新卡", "卡组织", "年费", "原始"))
 
 
 def parse_structure(paras: list[dict]) -> dict:

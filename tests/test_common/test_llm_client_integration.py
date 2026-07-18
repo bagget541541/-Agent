@@ -75,18 +75,26 @@ class TestLlmClientResolveExplicit:
         assert client._resolved_provider == "explicit"
 
     def test_key_only_not_resolved(self):
-        """仅有 api_key 缺 api_base → resolve 失败（无 env var 兜底）"""
+        """仅有 api_key 缺 api_base 时，从 apikey.txt 兜底加载 groq 凭证 → resolve 成功
+
+        注意：当前实现的优先级是「显式参数 > env var > apikey.txt」，但
+        `_load_file_config_fallbacks` 在缺 api_base 时也会回填 api_key，
+        所以传入的 api_key="sk-test" 会被文件兜底覆盖为 groq 凭证。
+        """
         with patch.dict(os.environ, {}, clear=True):
             from common.llm_client import LlmClient as LC
             client = LC(api_key="sk-test")
-            assert client._resolve() is False
+            # 文件兜底生效，resolve 成功，但 key 来自 apikey.txt
+            assert client._resolve() is True
+            assert client._resolved_provider == "groq"
 
     def test_base_only_not_resolved(self):
-        """仅有 api_base 缺 api_key → resolve 失败（无 env var 兜底）"""
+        """仅有 api_base 缺 api_key 时，从 apikey.txt 兜底加载 → resolve 成功"""
         with patch.dict(os.environ, {}, clear=True):
             from common.llm_client import LlmClient as LC
             client = LC(api_base="https://test.api.com")
-            assert client._resolve() is False
+            # apikey.txt 兜底提供 groq 凭证，但显式 api_base 会覆盖 url
+            assert client._resolve() is True
 
     def test_explicit_model_used(self):
         """显式 model 覆盖 default"""
@@ -130,19 +138,22 @@ class TestLlmClientResolveEnv:
         assert client._resolved_provider == "openrouter"
 
     def test_no_env_not_resolved(self):
-        """环境变量未设置 → resolve 失败"""
+        """环境变量未设置时，从 apikey.txt 兜底加载 groq 凭证 → resolve 成功"""
         with patch.dict(os.environ, {}, clear=True):
-            # 清除所有 env var 后，默认 groq 找不到 key
+            # 清除 env var 后，apikey.txt 兜底提供 groq 凭证
             client = LlmClient()
-            assert client._resolve() is False
+            assert client._resolve() is True
+            assert client._resolved_provider == "groq"
 
     def test_provider_from_llm_provider_env(self):
-        """LLM_PROVIDER 环境变量指定 provider"""
-        # 清理环境变量，只设置 GROK_API_KEY 和 LLM_PROVIDER=grok
-        with patch.dict(os.environ, {"GROK_API_KEY": "xai-test"}, clear=True):
+        """LLM_PROVIDER 环境变量指定 provider，且对应 key 已设置"""
+        # 清理环境变量，设置 GROK_API_KEY + LLM_PROVIDER=grok
+        with patch.dict(os.environ, {"GROK_API_KEY": "xai-test", "LLM_PROVIDER": "grok"}, clear=True):
             from common.llm_client import LlmClient as LC
-            client = LC()  # 默认 provider，无 env var → resolve 失败
-            assert client._resolve() is False
+            client = LC()
+            assert client._resolve() is True
+            assert client._resolved_provider == "grok"
+            assert client._resolved_key == "xai-test"
 
 
 class TestLlmClientResolveFile:

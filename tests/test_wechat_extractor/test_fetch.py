@@ -260,16 +260,21 @@ class TestFindChrome:
 class TestLoadLLMConfig:
 
     def test_config_file_present(self):
-        fake_cfg = {"api_key": "sk-123", "api_base": "https://custom.api/v1"}
-        m = mock_open(read_data='{"api_key": "sk-123", "api_base": "https://custom.api/v1"}')
+        """显式 file config 优先（mock _load_file_config 直接返回该 cfg）。"""
+        fake_cfg = '{"api_key": "sk-123", "api_base": "https://custom.api/v1"}'
+        m = mock_open(read_data=fake_cfg)
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", m):
+             patch("builtins.open", m), \
+             patch("common.llm_client._load_file_config",
+                   return_value={"api_key": "sk-123", "api_base": "https://custom.api/v1"}):
             result = fwa._load_llm_config()
         assert result["api_key"] == "sk-123"
         assert result["api_base"] == "https://custom.api/v1"
 
     def test_config_file_absent_env_fallback(self):
+        """file config 不存在 + env 已设置 → 用 env 值。"""
         with patch("os.path.exists", return_value=False), \
+             patch("common.llm_client._load_file_config", return_value=None), \
              patch.dict(os.environ, {"LLM_API_KEY": "env-key", "LLM_API_BASE": "https://env.api"}):
             result = fwa._load_llm_config()
         assert result["api_key"] == "env-key"
@@ -293,10 +298,10 @@ class TestLoadLLMConfig:
         assert result["vision_model"] == fwa.DEFAULT_VISION_MODEL
 
     def test_vision_model_precedence(self):
-        """config 文件优先于环境变量。"""
-        m = mock_open(read_data='{"vision_model": "gpt-4o"}')
+        """file config 中的 vision_model 优先于环境变量。"""
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", m), \
+             patch("common.llm_client._load_file_config",
+                   return_value={"vision_model": "gpt-4o"}), \
              patch.dict(os.environ, {"LLM_VISION_MODEL": "env-model"}):
             result = fwa._load_llm_config()
         assert result["vision_model"] == "gpt-4o"

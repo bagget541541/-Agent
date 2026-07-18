@@ -176,6 +176,7 @@ class CreditCardItem:
         self.structured_clean = structured_clean or {}
         self.author = author
         self.publish_time = publish_time
+        # 仅在未显式传入时才回退到当前时间，保证 from_dict 不重置时间
         self.extracted_at = extracted_at or datetime.now().isoformat(timespec="seconds")
         self.item_id = item_id or uuid.uuid4().hex[:12]
         self.confidence = confidence or {}
@@ -336,14 +337,23 @@ class CreditCardBatch:
 
     @classmethod
     def load_json(cls, filepath: str) -> "CreditCardBatch":
-        """从标准格式 JSON 文件读取。"""
+        """从标准格式 JSON 文件读取。保留原始 generated_at，并做 schema_version 兼容检查。"""
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
+        file_version = data.get("schema_version")
+        if file_version and file_version != cls.SCHEMA_VERSION:
+            print(
+                f"[Warn] schema version mismatch: file={file_version} "
+                f"code={cls.SCHEMA_VERSION}"
+            )
         items = [CreditCardItem.from_dict(it) for it in data.get("items", [])]
-        return cls(
+        batch = cls(
             items=items,
             batch_label=data.get("batch_label", ""),
         )
+        # 保留磁盘上的原始生成时间，避免被 __init__ 的 datetime.now() 覆盖
+        batch.generated_at = data.get("generated_at") or batch.generated_at
+        return batch
 
     def __repr__(self) -> str:
         return f"<CreditCardBatch {len(self.items)} items, label={self.batch_label}>"

@@ -91,6 +91,7 @@ def build_context(batch_data: dict, focus: str = "", scorer: str = "keyword") ->
         raw_text = item.get('raw_text', '')
 
         points = {
+            'item_id': item.get('item_id', ''),
             'title': title,
             'bank': bank,
             'url': url,
