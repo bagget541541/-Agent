@@ -73,3 +73,22 @@ data/Weekly_Report_*.docx
 .env
 *.env.local
 # .env.example is safe for commit
+
+# Sensitive files
+apikey.txt
+
+# Runtime logs
+pipeline_log.txt
+
+# pytest temp dirs
+pytest-cache-files-*/
+
+# Sandbox / debug launchers
+run_outside_sandbox.py
+
+# Old/obsolete scripts
+weekly_to_wechat.py
+
+# Output HTML for WeChat (generated, not tracked)
+data/*_公众号粘贴版.html
+*_公众号粘贴版.html
