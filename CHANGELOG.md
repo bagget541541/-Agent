@@ -1,5 +1,43 @@
 # 修订记录
 
+## v0.21.0 — 2026-07-18
+
+### Mode E+：docx 整合点评 → 公众号 HTML
+
+- 新增 `docx_to_wechat.py`：针对"信用卡资讯整合点评"类 docx（四段式标题/来源/核心内容/点评 + 本期总结 + 原始链接），直接转公众号可粘贴 HTML 片段
+- 四段式语义块识别：`来源：`/`核心内容：`/`点评：` 三种前缀回填当前条目；首段非前缀文本识别为文章总标题并跳过
+- 本期总结区块：`本期总结` 触发，后续 `•` 行转 `<ul>`
+- 原始链接区块：段内纯文本 URL 与 hyperlink 关系（`word/_rels/document.xml.rels`）按出现顺序配对，URL 去重
+- 复用 `md_to_wechat.py` 的 `inline()` 内联渲染、主题配色、样式骨架
+- 验证：`公众号文章整合点评_0714+0717.md.docx` 上 7 条资讯 / 8 行总结 / 6 条链接全部正确解析
+
+### Mode F：信用卡周报 docx → 公众号 HTML
+
+- 新增 `weekly_report_to_wechat.py`：针对信用卡周报 Word docx（Title/Heading1/Heading2/ListBullet/normal 段落样式），转公众号可粘贴 HTML 片段
+- 样式骨架参考 flyertrss 公众号粘贴版风格：
+  - 外壳 `max-width:640px` + PingFang SC 字体
+  - 条目卡片：圆角 + 左侧 4px 色条 + 银行标签（20 家银行关键词识别与配色）+ 亮点块
+  - 总览条统计各类别条目数（📊 周报概览 — 本期共 N 条 · 新卡资讯 X条 · 优惠活动 Y条 · …）
+  - 过滤详细内容（SKIP_DETAIL_PREFIXES 干掉活动内容/详情/变更内容等 11 类长正文）
+  - 原帖链接汇总区（纯连续序号 1-N，剥条目标题 `N.` 编号前缀，URL 去重）
+  - AI 声明（`background:#fff7ed`）+ 互动 CTA（`background:#0f172a`）收尾
+- 验证：`data/Weekly_Report_2026年7月第3周.docx` 上 14 张卡片 / 11 条链接 / 13/13 项风格一致
+
+### run.bat 优化
+
+- 新增 [F] Weekly report → WeChat HTML 入口，调用 `weekly_report_to_wechat.py`
+- 每个 mode 加示例文件行，便于快速选择
+- 修复 run.bat 闪退：根因为 LF-only 换行（Git checkout 在 Windows 上把 CRLF 转成 LF），cmd.exe 解析 LF-only `.bat` 时把多行当一行、变量名当命令；改回 UTF-8 + CRLF 后菜单正常显示、stderr 归零
+
+### 工程清理
+
+- 补充 `.gitignore`：apikey.txt、pipeline_log.txt、pytest-cache-files-*/、run_outside_sandbox.py、weekly_to_wechat.py、`*_公众号粘贴版.html`
+- `git rm --cached pipeline_log.txt` 取消跟踪运行时日志
+- 清理根目录噪声文件：旧 Readme v1、pytest 缓存目录、根目录输出 HTML
+- 代码审查报告写入 `docs/code_review_20260718.md`（8 项，P2 3 项 / P3 5 项，无 P1/S）
+- 工程文件清理分析写入 `docs/cleanup_analysis_20260718.md`
+- 更新 Readme 顶部模式描述 + 架构 Mode F 段 + Mode F 用法段
+
 ## v0.20.6 — 2026-07-13
 
 ### Mode C：浦发与交行公告抓取修复

@@ -1724,8 +1724,6 @@ def run_pipeline(
     _filtered = _items_before - len(batch.items)
     if _filtered:
         print(f"  [P0-3] Filtered {_filtered} noisy items (other category)")
-    if _dedup_count:
-        print(f"  [P0-3] Deduped {_dedup_count} items (removed duplicate paragraphs)")
 
     # Step 4: 生成报告 — Phase 1: 在 Step 5 之后，batch 已含富字段
     if mode == 'c':
