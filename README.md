@@ -142,9 +142,19 @@ python _agent.py --archive-only
 _agent.py               # 根级 stub → src/agent.py（向后兼容）
 rag_query.py            # 根级 stub → src/rag_query.py
 run_pipeline.py         # 根级 stub → run_pipeline.py
+docx_to_wechat.py       # 根级 stub → src/docx_to_wechat.py
+weekly_report_to_wechat.py # 根级 stub → src/weekly_report_to_wechat.py
+md_to_wechat.py         # 根级 stub → src/md_to_wechat.py
+md_merge.py             # 根级 stub → src/md_merge.py
+merge_docs.py           # 根级 stub → src/merge_docs.py
 src/                    # 核心源码包
   agent.py              #   Agent 全流程编排
   rag_query.py          #   RAG 知识库问答
+  docx_to_wechat.py     #   整合点评 docx → 公众号 HTML
+  weekly_report_to_wechat.py # 周报 docx → 公众号 HTML
+  md_to_wechat.py       #   Markdown → 公众号 HTML
+  md_merge.py           #   Markdown 合并点评整合
+  merge_docs.py         #   多 Word 文档整合
 common/                 # 公共层：数据契约、分类、LLM、图片
   images.py             #   图片生命周期管理（去重/过滤/中心化存储）
   llm_client.py         #   统一 LLM 客户端（多 provider 自动检测）
