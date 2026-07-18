@@ -18,24 +18,33 @@ echo.
 echo   [A] Full pipeline
 echo       WeChat URLs + Bank scraping (Step1-2) + Webpage URLs
 echo       -^> Step3-6 生成 Word 报告 (含摘要/评分/建议)
+echo       示例: python _agent.py --mode a --wechat-url "https://mp.weixin.qq.com/s/xxx"
 echo.
 echo   [B] Merge mode
 echo       不抓取，合并已有 Word 文档
 echo       -^> Step5-6 合并 + 生成建议，输出 Word 报告
+echo       示例: python merge_docs.py --input data\a.docx data\b.docx
 echo.
 echo   [C] Quick mode
 echo       WeChat URLs + Bank scraping (Step1-2) + Webpage URLs
 echo       -^> Step3-4 仅生成 Markdown+图片，跳过 Step5-6
+echo       示例: python _agent.py --mode c --bank-days 7
 echo.
 echo   [D] Markdown editorial mode
 echo       合并 Markdown，保留原文并生成主题点评与行动建议
+echo       示例: data\公众号文章整理_20260708.md data\公众号文章整理_20260711.md
 echo.
 echo   [E] WeChat publish mode
 echo       将 Mode D 成稿转换为公众号可粘贴 HTML
+echo       示例: python md_to_wechat.py data\mode_d_merged.md
+echo.
+echo   [F] Weekly report → WeChat HTML
+echo       信用卡周报 Word docx 转公众号可粘贴 HTML
+echo       示例: data\Weekly_Report_2026年7月第3周.docx
 echo.
 echo   [Q] Exit
 echo.
-set /p choice=Enter choice (A/B/C/D/E/Q, default A):
+set /p choice=Enter choice (A/B/C/D/E/F/Q, default A):
 if "%choice%"=="" set choice=A
 
 if /i "%choice%"=="A" goto :mode_a
@@ -48,6 +57,8 @@ if /i "%choice%"=="D" goto :mode_d
 if /i "%choice%"=="d" goto :mode_d
 if /i "%choice%"=="E" goto :mode_e
 if /i "%choice%"=="e" goto :mode_e
+if /i "%choice%"=="F" goto :mode_f
+if /i "%choice%"=="f" goto :mode_f
 if /i "%choice%"=="Q" goto :end
 if /i "%choice%"=="q" goto :end
 
@@ -234,6 +245,24 @@ if not "%e_output%"=="" (
     python -X utf8 md_to_wechat.py "%e_input%" --output "%e_output%"
 ) else (
     python -X utf8 md_to_wechat.py "%e_input%"
+)
+goto :done
+
+:mode_f
+echo.
+echo ============================================================
+echo   Mode F: Weekly Report docx -^> WeChat HTML
+echo ============================================================
+echo.
+echo Mode F 默认处理 data\Weekly_Report_2026年7月第3周.docx
+echo.
+set /p f_input=Input docx (blank: data\Weekly_Report_2026年7月第3周.docx):
+if "%f_input%"=="" set "f_input=data\Weekly_Report_2026年7月第3周.docx"
+set /p f_output=Output HTML (blank: auto-generated):
+if not "%f_output%"=="" (
+    python -X utf8 weekly_report_to_wechat.py "%f_input%" --output "%f_output%"
+) else (
+    python -X utf8 weekly_report_to_wechat.py "%f_input%"
 )
 goto :done
 

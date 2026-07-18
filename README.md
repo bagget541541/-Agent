@@ -2,7 +2,7 @@
 
 > 全自动抓取 → 分类 → 合并 → 出报告 → 持卡建议 → 归档知识库
 >
-> 支持五种模式：**Mode A** 全流程 / **Mode B** Word 多文档整合 / **Mode C** 仅数据处理 / **Mode D** Markdown 合并点评整合 / **Mode E** 公众号发布 HTML
+> 支持六种模式：**Mode A** 全流程 / **Mode B** Word 多文档整合 / **Mode C** 仅数据处理 / **Mode D** Markdown 合并点评整合 / **Mode E** 公众号发布 HTML / **Mode F** 周报 docx → 公众号 HTML
 
 将信用卡周报的产出流程完全 **agent 化**，一句话触发完整流水线，归档数据沉淀为可检索的知识库。
 
@@ -116,6 +116,16 @@ python _agent.py --archive-only
         │   ├── 将 Mode D 成稿转为公众号可粘贴 HTML
         │   ├── 仅使用内联样式，不依赖 CSS/JS
         │   └── 保留标题、表格、列表、引用、来源和图片占位
+        │
+        ├── Mode F: 周报 docx → 公众号 HTML ───────────────
+        │   │
+        │   ├── 信用卡周报 Word docx → 公众号可粘贴 HTML
+        │   ├── 识别 Title/Heading1/Heading2/ListBullet/normal 段落样式
+        │   ├── 总览条统计各类别条目数
+        │   ├── 条目卡片：圆角 + 左侧 4px 色条 + 银行标签 + 亮点块
+        │   ├── 过滤详细内容（活动内容/详情/变更内容等长正文）
+        │   ├── 原帖链接汇总区（纯连续序号）
+        │   └── AI 声明 + 互动 CTA 收尾
         │
         └── Mode C: 仅数据处理 ────────────────────────────
             │
@@ -326,6 +336,23 @@ python docx_to_wechat.py "公众号文章整合点评_0714+0717.md.docx" \
 - **本期总结区块**：`本期总结` 触发，后续 `•` 行转 `<ul>`。
 - **原始链接区块**：`原始链接` 触发，段内纯文本 URL 与 hyperlink 关系（`word/_rels/document.xml.rels`）按出现顺序配对，URL 去重，hyperlink 文本是 URL 本身/前缀时跳过。
 - **配色**：`COLORS` 含 `境外` / `返现` / `年费` / `世界杯` 等主题色，按标题+核心内容关键词匹配。
+
+**Mode F: 周报 docx → 公众号 HTML**
+
+针对"信用卡周报"Word docx（Word 原生段落样式 `Title` / `Heading1` / `Heading2` / `ListBullet` / `normal`），转成公众号编辑器可粘贴的 HTML 片段。样式骨架参考 `D:\ckl\个人\bat\flyertrss\_site\公众号粘贴版_*.html`：
+
+```bash
+python weekly_report_to_wechat.py "data/Weekly_Report_2026年7月第3周.docx" \
+    --output "data/Weekly_Report_2026年7月第3周_公众号粘贴版.html"
+```
+
+解析与渲染：
+- **段落样式识别**：`Title` → 主标题；`Heading1` → 一级分类（带 emoji 前缀 🆕⚠️🎁📢💡）；`Heading2` → 二级条目（剥 `N.` 编号前缀，⚪🟡🔴 优先级配色）；`ListBullet` → `<ul>`；`normal` → 语义段或普通段落。
+- **总览条**：`📊 周报概览` + 统计各类别条目数（新卡资讯 2 条 · 优惠活动 6 条 · …）。
+- **条目卡片**：圆角 `border-radius:8px` + 左侧 4px 色条 + 银行标签（含 `BANK_KEYWORDS` 银行名识别与配色）+ 条目标题 + 亮点块（白底 + 浅灰边框）。
+- **过滤详细内容**：`SKIP_DETAIL_PREFIXES` 集合干掉活动内容/详情/变更内容/时间/影响范围/适用人群/年费回报评估/注意事项/核心理由/卡种/来源等长正文。
+- **原帖链接汇总区**：纯连续序号 1-N，从各条目的"原文链接："语义段和段落 URL 里收集，URL 去重。
+- **AI 声明 + 互动 CTA**：`background:#fff7ed` 声明 + `background:#0f172a` CTA 收尾。
 
 **Mode E: 公众号发布 HTML**
 - 默认读取 data/mode_d_merged.md
