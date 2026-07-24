@@ -19,6 +19,13 @@ import re
 import zipfile
 from pathlib import Path
 
+from docx import Document
+from docx.document import Document as DocxDocument
+from docx.oxml.table import CT_Tbl
+from docx.oxml.text.paragraph import CT_P
+from docx.table import Table
+from docx.text.paragraph import Paragraph
+
 # ── 主题色（沿用 md_to_wechat.py 思路，按关键词给标题/点评配色）──────────
 COLORS = {
     "权益": "#2563eb",
@@ -95,7 +102,7 @@ def parse_docx(path: Path) -> list[dict]:
 
         # 段内纯文本
         t_text = "".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", pxml, re.S))
-        full_text = _strip_tags(t_text).strip()
+        full_text = html.unescape(_strip_tags(t_text)).strip()
         has_img = "<w:blip" in pxml or "<w:drawing" in pxml
         if full_text or links:
             paragraphs.append({
@@ -107,6 +114,17 @@ def parse_docx(path: Path) -> list[dict]:
     return paragraphs
 
 
+
+def _iter_docx_blocks(document: DocxDocument) -> list[Paragraph | Table]:
+    """Yield top-level paragraphs and tables in document order."""
+    blocks: list[Paragraph | Table] = []
+    body = document.element.body
+    for child in body.iterchildren():
+        if isinstance(child, CT_P):
+            blocks.append(Paragraph(child, document))
+        elif isinstance(child, CT_Tbl):
+            blocks.append(Table(child, document))
+    return blocks
 # ── 内联渲染（精简自 md_to_wechat.inline）─────────────────────────────
 def esc(value: str) -> str:
     return html.escape(value, quote=True)
@@ -352,6 +370,132 @@ def render_raw_links(raw_links: list[dict]) -> str:
     return "\n".join(out)
 
 
+def _paragraph_kind(paragraph: Paragraph, index: int) -> str:
+    style = paragraph.style.name if paragraph.style is not None else ""
+    text = paragraph.text.strip()
+    if index == 0:
+        return "title"
+    if index == 1:
+        return "subtitle"
+    if style.startswith("Heading 1"):
+        return "h2"
+    if style.startswith("Heading 2"):
+        return "h3"
+    if style.startswith("Heading 3"):
+        return "h4"
+    if style.startswith("List"):
+        return "li"
+    if re.fullmatch(r"[─\-—]{6,}", text):
+        return "rule"
+    if text.startswith(("🔴", "🟡", "⚪", "🆕")) and len(text) <= 40:
+        return "badge"
+    return "p"
+
+
+def _render_table(table: Table) -> str:
+    rows: list[list[str]] = []
+    for row in table.rows:
+        cells = []
+        for cell in row.cells:
+            parts = [p.text.strip() for p in cell.paragraphs if p.text.strip()]
+            cells.append("<br>".join(inline(part) for part in parts))
+        if any(cells):
+            rows.append(cells)
+    if not rows:
+        return ""
+
+    header = rows[0]
+    head_html = "".join(
+        f'<th style="padding:8px;text-align:left;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:12px;line-height:1.5;vertical-align:top">{cell}</th>'
+        for cell in header
+    )
+    body_rows = []
+    for row in rows[1:]:
+        body_rows.append(
+            "<tr>" + "".join(
+                f'<td style="padding:8px;border-bottom:1px solid #e5e7eb;font-size:12px;line-height:1.65;vertical-align:top;color:#334155">{cell}</td>'
+                for cell in row
+            ) + "</tr>"
+        )
+    return (
+        '<div style="overflow-x:auto;margin:12px 0 18px">'
+        '<table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb">'
+        f'<thead><tr>{head_html}</tr></thead><tbody>{"".join(body_rows)}</tbody></table></div>'
+    )
+
+
+def render_docx_flow(docx_path: Path, title: str = "") -> str:
+    """Render a formatted DOCX article without forcing it into the legacy four-part schema."""
+    document = Document(docx_path)
+    out: list[str] = []
+    list_items: list[str] = []
+    paragraph_index = 0
+    in_review = False
+
+    def flush_list() -> None:
+        if list_items:
+            out.append(
+                f'<ul style="margin:8px 0 14px;padding-left:22px;color:#334155;font-size:14px">{"".join(list_items)}</ul>'
+            )
+            list_items.clear()
+
+    for block in _iter_docx_blocks(document):
+        if isinstance(block, Table):
+            flush_list()
+            table_html = _render_table(block)
+            if table_html:
+                out.append(table_html)
+            continue
+
+        text = block.text.strip()
+        if not text:
+            flush_list()
+            continue
+        kind = _paragraph_kind(block, paragraph_index)
+        paragraph_index += 1
+
+        if kind != "li":
+            flush_list()
+        if kind in {"h2", "h3", "h4", "title", "subtitle", "rule"}:
+            in_review = False
+        color = color_for(text)
+
+        if kind == "title":
+            out.append(f'<h1 style="font-size:24px;line-height:1.4;color:#0f172a;margin:6px 0 8px;font-weight:700">{inline(title or text)}</h1>')
+        elif kind == "subtitle":
+            out.append(f'<p style="margin:0 0 16px;color:#475569;font-size:14px;line-height:1.75">{inline(text)}</p>')
+        elif kind == "rule":
+            out.append('<div style="height:1px;background:#e5e7eb;margin:18px 0"></div>')
+        elif kind == "h2":
+            out.append(f'<div style="margin:26px 0 12px;padding:9px 12px;border-left:4px solid {color};background:#f8fafc"><h2 style="font-size:18px;line-height:1.5;color:#0f172a;margin:0;font-weight:700">{inline(text)}</h2></div>')
+        elif kind == "h3":
+            out.append(f'<h3 style="font-size:17px;line-height:1.5;color:{color};margin:22px 0 8px;font-weight:700">{inline(text)}</h3>')
+        elif kind == "h4":
+            in_review = text == "专业点评"
+            out.append(f'<h4 style="font-size:15px;line-height:1.5;color:{color};margin:18px 0 8px;font-weight:700">{inline(text)}</h4>')
+        elif kind == "li":
+            list_items.append(f'<li style="margin:4px 0;line-height:1.75">{inline(text)}</li>')
+        elif kind == "badge":
+            out.append(f'<p style="display:inline-block;margin:0 0 10px;padding:2px 8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:999px;color:#475569;font-size:12px;line-height:1.6">{inline(text)}</p>')
+        elif in_review:
+            out.append(f'<blockquote style="margin:10px 0;padding:10px 14px;border-left:4px solid {color};background:#f8fafc;color:#334155;font-size:13px;line-height:1.85;text-align:justify">{inline(text)}</blockquote>')
+        else:
+            out.append(f'<p style="margin:10px 0;color:#334155;font-size:14px;line-height:1.9;text-align:justify">{inline(text)}</p>')
+
+    flush_list()
+    body = "\n".join(out)
+    return (
+        f'<div style="max-width:680px;margin:0 auto;padding:20px 16px 32px;background:#fff;'
+        f'font-family:PingFang SC,Microsoft YaHei,sans-serif;line-height:1.8;color:#334155">{body}</div>'
+    )
+
+
+def _looks_like_legacy_four_part(paras: list[dict]) -> bool:
+    source_count = sum(1 for p in paras if p["text"].strip().startswith(("来源：", "来源:")))
+    core_count = sum(1 for p in paras if p["text"].strip().startswith(("核心内容：", "核心内容:")))
+    review_count = sum(1 for p in paras if p["text"].strip().startswith(("点评：", "点评:")))
+    return min(source_count, core_count, review_count) >= 2
+
 def render_html(struct: dict, title: str = "") -> str:
     items = struct["items"]
     if not title:
@@ -385,15 +529,18 @@ def render_html(struct: dict, title: str = "") -> str:
 # ── 入口 ───────────────────────────────────────────────────────────────
 def convert(docx_path: Path, output: Path | None = None, title: str = "") -> tuple[Path, str]:
     paras = parse_docx(docx_path)
-    struct = parse_structure(paras)
-    if not title:
-        title = f"信用卡资讯整合点评｜共 {len(struct['items'])} 条"
-    fragment = render_html(struct, title)
+    if _looks_like_legacy_four_part(paras):
+        struct = parse_structure(paras)
+        final_title = title or f"信用卡资讯整合点评｜共 {len(struct['items'])} 条"
+        fragment = render_html(struct, final_title)
+    else:
+        first_text = next((p["text"].strip() for p in paras if p["text"].strip()), "")
+        final_title = title or first_text or "信用卡资讯整合点评"
+        fragment = render_docx_flow(docx_path, title)
     out = output or docx_path.with_name(docx_path.stem + "_公众号粘贴版.html")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(fragment, encoding="utf-8")
-    return out, title
-
+    return out, final_title
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="docx 整合点评 → 公众号可粘贴 HTML")
@@ -414,3 +561,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

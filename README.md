@@ -334,7 +334,7 @@ python _agent.py --mode c                                   # 仅数据处理（
 
 **Mode E+: docx 整合点评 → 公众号 HTML**
 
-针对"信用卡资讯整合点评"类 docx（四段式：标题 / 来源 / 核心内容 / 点评 + 本期总结 + 原始链接），直接转成公众号编辑器可粘贴的 HTML 片段，复用 `md_to_wechat.py` 的内联渲染、主题配色与样式骨架：
+针对"信用卡资讯整合点评"类 docx，直接转成公众号编辑器可粘贴的 HTML 片段，复用 `md_to_wechat.py` 的内联渲染、主题配色与样式骨架：
 
 ```bash
 python docx_to_wechat.py "公众号文章整合点评_0714+0717.md.docx" \
@@ -342,10 +342,12 @@ python docx_to_wechat.py "公众号文章整合点评_0714+0717.md.docx" \
 ```
 
 解析逻辑：
-- **四段式识别**：`来源：` / `核心内容：` / `点评：` 三种前缀回填当前条目；其余非空行视为新条目标题；首段非前缀文本识别为文章总标题并跳过。
+- **格式化整合稿**：当 docx 使用 Word 原生 Heading、普通段落、列表和表格排版时，按文档流顺序渲染，保留表格、层级标题、导读正文和“专业点评”引用块。
+- **四段式兼容**：仅当 `来源：` / `核心内容：` / `点评：` 成组出现时启用旧卡片式解析，保留标题 / 来源 / 核心内容 / 点评 + 本期总结 + 原始链接的原有流程。
 - **本期总结区块**：`本期总结` 触发，后续 `•` 行转 `<ul>`。
 - **原始链接区块**：`原始链接` 触发，段内纯文本 URL 与 hyperlink 关系（`word/_rels/document.xml.rels`）按出现顺序配对，URL 去重，hyperlink 文本是 URL 本身/前缀时跳过。
-- **配色**：`COLORS` 含 `境外` / `返现` / `年费` / `世界杯` 等主题色，按标题+核心内容关键词匹配。
+- **实体处理**：先反转义 docx XML 文本，再执行 HTML 转义，避免 `&amp;quot;` / `&amp;lt;` 二次转义。
+- **配色**：`COLORS` 含 `境外` / `返现` / `年费` / `世界杯` 等主题色，按标题+正文关键词匹配。
 
 **Mode F: 周报 docx → 公众号 HTML**
 
@@ -655,7 +657,9 @@ SCORE_RULES = {
 - [x] 可选 LLM 跨条目点评增强
 
 ### M12 — docx 整合点评 → 公众号 HTML ✅
-- [x] 新增 `docx_to_wechat.py`：针对"信用卡资讯整合点评"类 docx（四段式标题/来源/核心内容/点评 + 本期总结 + 原始链接），直接转公众号可粘贴 HTML 片段
+- [x] 新增 `docx_to_wechat.py`：针对"信用卡资讯整合点评"类 docx，直接转公众号可粘贴 HTML 片段
+- [x] 支持格式化整合稿文档流渲染：保留 Heading、普通段落、列表、表格和专业点评引用块
+- [x] 兼容旧四段式标题/来源/核心内容/点评 + 本期总结 + 原始链接解析
 - [x] 复用 `md_to_wechat.py` 的 `inline()` 内联渲染、主题配色、样式骨架
 - [x] 修复 `run.bat` 闪退：根因为 **LF-only 换行**（Git checkout 在 Windows 上把 CRLF 转成 LF），cmd.exe 解析 LF-only `.bat` 时把多行当一行、变量名当命令；改回 **UTF-8 + CRLF** 后菜单正常显示、stderr 归零
 - [x] 教训：`.bat` 在中文 Windows cmd.exe 下必须满足两个硬条件——**UTF-8 编码**（配 `chcp 65001`）+ **CRLF 换行**；GBK 转换是错误方向，会导致 `chcp 65001` 后中文 echo 反而乱码
@@ -668,6 +672,7 @@ SCORE_RULES = {
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
+| v0.21.1 | 2026-07-25 | Mode E+ docx 整合点评文档流渲染修复：保留表格/标题/点评块，避免格式化整合稿误判为数百条资讯，修复 XML 实体二次转义，新增回归测试 |
 | v0.20.4 | 2026-07-12 | 新增 Mode D Markdown 合并点评整合：证据保留、标题去重、主题聚合、行动建议、审计 JSON、可选 LLM 增强；样例 2 份文档合并为 6 条资讯 |
 | v0.18 | 2026-06-04 | 新增 Step 1b 通用网页抓取（复用 news-analyzer extract_content.py），支持 `--webpage-url` CLI 参数 + `run.bat` 交互式输入，`run_pipeline.py` 修复破损导入路径 |
 | v0.17 | 2026-06-13 | 5 项修复（generate_docx 重写/Pillow 取消注释/eastAsia 双设/ensure_dir 导入/generate_merged_docx 入口）+ llm_review 银行去重 + rag_query 路径统一 + 经验教训沉淀 TOOLS.md + 420 全通过 |
@@ -721,3 +726,4 @@ python scripts\check_image_placement.py --input data\merge_test_0606.json --outp
 - 若执行自动 remap，会在替换前创建备份，例如 `data/merge_test_0606.json.pre_remap.bak`。
 - `validate_batch.py` 的检测规则见 `scripts/validate_batch.py`；疑似广告图会列入 `ad_like_images`。
 - `check_image_placement.py` 会尝试按标题匹配 H2 段落并比较 rId 顺序，若不一致会给出 `remap_to_doc_order` 建议供人工确认或自动修正。
+
