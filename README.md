@@ -337,7 +337,7 @@ python _agent.py --mode c                                   # 仅数据处理（
 针对"信用卡资讯整合点评"类 docx，直接转成公众号编辑器可粘贴的 HTML 片段，复用 `md_to_wechat.py` 的内联渲染、主题配色与样式骨架：
 
 ```bash
-python docx_to_wechat.py "公众号文章整合点评_0714+0717.md.docx" \
+python docx_to_wechat.py "data/samples/公众号文章整合点评_0714+0717.md.docx" \
     --output "公众号粘贴版.html" --title "自定义标题"
 ```
 
@@ -675,7 +675,7 @@ SCORE_RULES = {
 | v0.21.1 | 2026-07-25 | Mode E+ docx 整合点评文档流渲染修复：保留表格/标题/点评块，避免格式化整合稿误判为数百条资讯，修复 XML 实体二次转义，新增回归测试 |
 | v0.20.4 | 2026-07-12 | 新增 Mode D Markdown 合并点评整合：证据保留、标题去重、主题聚合、行动建议、审计 JSON、可选 LLM 增强；样例 2 份文档合并为 6 条资讯 |
 | v0.18 | 2026-06-04 | 新增 Step 1b 通用网页抓取（复用 news-analyzer extract_content.py），支持 `--webpage-url` CLI 参数 + `run.bat` 交互式输入，`run_pipeline.py` 修复破损导入路径 |
-| v0.17 | 2026-06-13 | 5 项修复（generate_docx 重写/Pillow 取消注释/eastAsia 双设/ensure_dir 导入/generate_merged_docx 入口）+ llm_review 银行去重 + rag_query 路径统一 + 经验教训沉淀 TOOLS.md + 420 全通过 |
+| v0.17 | 2026-06-13 | 5 项修复（generate_docx 重写/Pillow 取消注释/eastAsia 双设/ensure_dir 导入/generate_merged_docx 入口）+ llm_review 银行去重 + rag_query 路径统一 + 经验教训沉淀 docs/TOOLS.md + 420 全通过 |
 | v0.16 | 2026-06-12 | 统一 LLM 客户端（common/llm_client.py）聚合 3 处重复调用代码、图片生命周期管理（common/images.py）聚合 2 处图片滤波+新增内容哈希去重、336 测试全通过 |
 | v0.15 | 2026-06-10 | Mode C（仅 Step1-4，跳过持卡分析+归档）、图片四层过滤（文件大小/最小尺寸/像素方差）、3 个数据质量修复（标题"未知推出"、去重加强、样板话跳过）、run.bat 菜单补 C 选项 |
 | v0.14 | 2026-06-08 | P3 目录结构整理（src/ 包 + 根级 stub + scripts/ + docs/）、P1 Word 修复逻辑迁移到 normalizer、P2 confidence 打分区分度优化、188 测试全通过 |

@@ -81,7 +81,7 @@
 
 **建议**：加入 `.gitignore`（如 `pytest-cache-files-*/`）。
 
-### 7. `doc-qa-reviewer/`
+### 7. `doc-qa-reviewer/`（已确认保留）
 
 | 属性 | 值 |
 |---|---|
@@ -138,7 +138,7 @@
 | 🟡 中 | 确认后删除 | `weekly_to_wechat.py`、`run_outside_sandbox.py` |
 | 🟡 中 | 取消跟踪 + 加 .gitignore | `data/*_公众号粘贴版.html` |
 | 🟢 低 | 删除 v1 | `信用卡周报自动化 AgentReadme.md` |
-| 🟢 低 | 确认后删除 | `doc-qa-reviewer/` |
+| 🟢 低 | 已确认保留 | `doc-qa-reviewer/` |
 | 🟢 低 | 删除根目录产物 | `公众号文章整合点评_0714+0717.md_公众号粘贴版.html` |
 
 ---
@@ -165,3 +165,4 @@ weekly_to_wechat.py
 data/*_公众号粘贴版.html
 *_公众号粘贴版.html
 ```
+

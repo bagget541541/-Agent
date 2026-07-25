@@ -8,7 +8,7 @@
 - 新增基于 `python-docx` 的文档流渲染路径，按原文顺序保留 Heading、普通段落、列表、表格与“专业点评”引用块
 - 保留旧四段式素材兼容路径，仅当 `来源：` / `核心内容：` / `点评：` 成组出现时使用卡片式解析
 - 修复 XML 实体二次转义，避免输出 `&amp;quot;` / `&amp;lt;`
-- 针对 `_app_data_所有对话_主对话_用户上传_公众号文章整合点评_0719+0722.docx` 回归：`table=6`、`blockquote=13`、无“共 276 条”误判
+- 针对 `data/samples/公众号文章整合点评_0719+0722.docx` 回归：`table=6`、`blockquote=13`、无“共 276 条”误判
 - 新增 `tests/test_docx_to_wechat.py` 覆盖格式化 docx 渲染与旧四段式识别
 
 ## v0.21.0 — 2026-07-18
@@ -20,7 +20,7 @@
 - 本期总结区块：`本期总结` 触发，后续 `•` 行转 `<ul>`
 - 原始链接区块：段内纯文本 URL 与 hyperlink 关系（`word/_rels/document.xml.rels`）按出现顺序配对，URL 去重
 - 复用 `md_to_wechat.py` 的 `inline()` 内联渲染、主题配色、样式骨架
-- 验证：`公众号文章整合点评_0714+0717.md.docx` 上 7 条资讯 / 8 行总结 / 6 条链接全部正确解析
+- 验证：`data/samples/公众号文章整合点评_0714+0717.md.docx` 上 7 条资讯 / 8 行总结 / 6 条链接全部正确解析
 
 ### Mode F：信用卡周报 docx → 公众号 HTML
 
@@ -270,7 +270,7 @@
 
 ## v0.17.0 — 2026-06-13
 
-### 修复 5 + 优化 1 + 经验沉淀 → TOOLS.md
+### 修复 5 + 优化 1 + 经验沉淀 → docs/TOOLS.md
 
 #### Fix 1: news-analyzer generate_docx.py 重写 — 图片嵌入 + LLM 点评 + 中文字体
 - 完全重写 `news-analyzer/scripts/generate_docx.py`，支持 `images` 字段嵌入图片、LLM `comment` 点评段插入、中文字体 eastAsia 双设
@@ -297,7 +297,7 @@
 #### Optimization: src/rag_query.py 路径配置统一
 - `os.path.dirname(__file__)` + `os.path.join` → `from common.config import DATA_DIR`，与全项目路径约定一致
 
-#### 经验教训（已追加到 TOOLS.md）
+#### 经验教训（已追加到 docs/TOOLS.md）
 - **eastAsia 双设**：python-docx 中文字体仅设 `run.font.name` 无效，必须额外设底层 XML `w:eastAsia`
 - **Pillow 不可注释**：注释掉 `requirements.txt` 中 Pillow 会让 `from PIL import Image` 抛出 ImportError
 - **路径统一**：新模块路径优先从 `common.config` 导入，不应本地 re-compute

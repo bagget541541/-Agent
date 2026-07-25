@@ -118,4 +118,5 @@ if __name__ == "__main__":
 ## 暂不处理
 
 - `scripts/` 下的辅助脚本（`show_last_run.py`、`validate_batch.py` 等）——与 `src/` 职责不同，保持原位
-- `run.bat` / `run_grok.bat` / `run_groq.bat` / `run_openrouter.bat` —— 非 py 脚本，保持原位
+- `run.bat` 保持根目录；`run_grok.bat` / `run_groq.bat` / `run_openrouter.bat` 已迁到 `scripts/launchers/`
+
