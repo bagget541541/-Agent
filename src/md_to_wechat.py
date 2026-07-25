@@ -67,6 +67,59 @@ def _cells(line: str) -> list[str]:
 def _strip_heading_prefix(title: str) -> str:
     return re.sub(r"^[一二三四五六七八九十0-9]+[、.．]\s*", "", title).strip()
 
+def _truncate_text(text: str, limit: int = 120) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+def _clean_publish_body(body: str) -> str:
+    lines = body.splitlines()
+    kept = []
+    dropping = False
+    drop_structured_fields = {"活动内容", "消息内容"}
+
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^\*\*原文摘要[：:]\*\*\s*$", stripped) and "结构化信息" in body:
+            dropping = True
+            continue
+
+        highlight_match = re.match(r"^\*\*亮点[：:]\*\*\s*(.*)$", stripped)
+        if highlight_match:
+            kept.append(f"**亮点：** {_truncate_text(highlight_match.group(1))}")
+            continue
+
+        bullet_match = re.match(r"^-\s+\*\*([^*]+)\*\*\s*[：:]\s*(.*)$", stripped)
+        if dropping:
+            if not bullet_match:
+                continue
+            dropping = False
+        if bullet_match:
+            field = bullet_match.group(1).strip()
+            value = bullet_match.group(2).strip()
+            if field in drop_structured_fields:
+                dropping = True
+                continue
+            if field == "点评" and not value:
+                continue
+
+        kept.append(line)
+
+    cleaned = []
+    i = 0
+    while i < len(kept):
+        stripped = kept[i].strip()
+        if re.match(r"^\*\*结构化信息[：:]\*\*\s*$", stripped):
+            j = i + 1
+            while j < len(kept) and not kept[j].strip():
+                j += 1
+            if j >= len(kept) or not re.match(r"^-\s+\*\*", kept[j].strip()):
+                i = j
+                continue
+        cleaned.append(kept[i])
+        i += 1
+
+    return "\n".join(cleaned).rstrip()
+
 
 def _extract_publish_items(md: str) -> list[dict]:
     lines = md.replace("\r\n", "\n").splitlines()
@@ -77,6 +130,13 @@ def _extract_publish_items(md: str) -> list[dict]:
     )
     search_lines = lines[item_section + 1:] if item_section >= 0 else lines
     starts = [item_section + 1 + i for i, line in enumerate(search_lines) if re.match(r"^###\s+\d+[.、]\s+", line.strip())]
+    if not starts:
+        starts = [i for i, line in enumerate(lines) if re.match(r"^###\s+\S", line.strip())]
+    h2_categories = [
+        (i, _strip_heading_prefix(re.sub(r"^##\s+", "", line.strip())))
+        for i, line in enumerate(lines)
+        if re.match(r"^##\s+", line.strip())
+    ]
     items = []
     for pos, start in enumerate(starts):
         end = starts[pos + 1] if pos + 1 < len(starts) else len(lines)
@@ -91,6 +151,10 @@ def _extract_publish_items(md: str) -> list[dict]:
         body_lines = []
         for line in lines[start + 1:end]:
             stripped = line.strip()
+            link_match = re.match(r"^\[原文链接\]\((https?://[^)\s]+)\)", stripped)
+            if link_match:
+                source_url = link_match.group(1)
+                continue
             source_match = re.match(r"^\*{0,2}来源\*{0,2}\s*[：:]\s*(https?://\S+)", stripped)
             if source_match:
                 source_url = source_match.group(1).rstrip(")")
@@ -100,14 +164,17 @@ def _extract_publish_items(md: str) -> list[dict]:
             if stripped.startswith("**来源") or stripped.startswith("来源："):
                 continue
             body_lines.append(line)
-        body = "\n".join(body_lines).strip()
+        body = _clean_publish_body("\n".join(body_lines).strip())
         category = ""
         m = re.search(r"\*\*属性\*\*\s*[：:]\s*([^｜|\n]+)", body)
         if m:
             category = m.group(1).strip()
         else:
             m = re.search(r"\*\*类别\*\*\s*[：:]\s*([^\n]+)", body)
-            category = m.group(1).strip() if m else "其他"
+            category = m.group(1).strip() if m else ""
+        if not category:
+            previous_h2 = [name for line_no, name in h2_categories if line_no < start]
+            category = previous_h2[-1] if previous_h2 else "其他"
         items.append({"title": title, "category": category, "body": body, "source_url": source_url})
     return items
 
@@ -149,7 +216,9 @@ def build_publish_markdown(md: str, title: str = "") -> tuple[str, str]:
     if links:
         lines += ["## 原文链接", ""]
         for index, item in enumerate(links, 1):
-            lines.append(f"{index}. [{item['title']}]({item['source_url']})")
+            lines.append(f"{index}、{item['title']}")
+            lines.append(item["source_url"])
+            lines.append("")
         lines.append("")
     return "\n".join(lines), title
 
@@ -162,9 +231,15 @@ def render_markdown(md: str, image_root: Path | None = None, embed: bool = False
 
     def flush() -> None:
         if paragraph:
-            text = " ".join(x.strip() for x in paragraph).strip()
+            raw_lines = [x.strip() for x in paragraph if x.strip()]
+            has_url = any(re.search(r"https?://", x) for x in raw_lines)
+            text = " ".join(raw_lines).strip()
             if text:
-                out.append(f'<p style="margin:10px 0;color:#334155;font-size:14px;line-height:1.9;text-align:justify">{inline(text, image_root, embed)}</p>')
+                if has_url:
+                    rendered = "<br>".join(inline(x, image_root, embed) for x in raw_lines)
+                    out.append(f'<p style="margin:10px 0;color:#334155;font-size:14px;line-height:1.9;text-align:left;word-break:break-all">{rendered}</p>')
+                else:
+                    out.append(f'<p style="margin:10px 0;color:#334155;font-size:14px;line-height:1.9;text-align:justify">{inline(text, image_root, embed)}</p>')
             paragraph.clear()
 
     while i < len(lines):

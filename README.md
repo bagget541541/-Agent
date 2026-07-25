@@ -373,6 +373,9 @@ python weekly_report_to_wechat.py "data/Weekly_Report_2026年7月第3周.docx" \
 - 图片源不可访问时显示上传占位，发布前需在公众号编辑器上传原图
 - 自动生成适合发布的标题，压缩摘要与主题观察
 - 文末集中展示原文链接，正文隐藏编辑过程信息
+- 兼容信用卡周报 Markdown：支持无编号 `### 标题` 条目，并从上级 `##` 统计分类
+- 发布稿清洗：删除重复的 `原文摘要`，过滤 `活动内容` / `消息内容` 长原文和空 `点评`，过长亮点自动截断
+- 原文链接以纯文本 URL 展示，不生成外部 `<a href>`，避免公众号编辑器无法识别外链；链接标题与 URL 分行左对齐
 
 交互入口：运行 run.bat，选择 [E]。高级参数仍可直接调用：
 
@@ -726,4 +729,3 @@ python scripts\check_image_placement.py --input data\merge_test_0606.json --outp
 - 若执行自动 remap，会在替换前创建备份，例如 `data/merge_test_0606.json.pre_remap.bak`。
 - `validate_batch.py` 的检测规则见 `scripts/validate_batch.py`；疑似广告图会列入 `ad_like_images`。
 - `check_image_placement.py` 会尝试按标题匹配 H2 段落并比较 rId 顺序，若不一致会给出 `remap_to_doc_order` 建议供人工确认或自动修正。
-
