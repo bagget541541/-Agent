@@ -69,3 +69,33 @@ def test_fallback_links_finds_hxb_detail_when_list_item_selector_changes():
         soup, bank, "https://creditcard.hxb.com.cn/card/cn/khfw/zygg/index.shtml"
     )
     assert any(item["url"].endswith("/138840.shtml") for item in items)
+
+
+def test_hxb_uses_real_list_and_detail_containers():
+    bank = website_scraper.BANK_CONFIGS["华夏银行"]
+    assert bank.list_item_selector == ".news_list > li"
+    assert bank.detail_content_selector == ".Details_main_main"
+    assert bank.is_low_value("华夏银行股份有限公司信用卡中心2026年第8期信用卡债权转让公告")
+    assert not bank.is_low_value("关于延续华夏银行美国运通Safari信用卡费用优惠的公告")
+
+
+def test_hkbea_ignores_navigation_and_filters_maintenance():
+    bank = website_scraper.BANK_CONFIGS["东亚银行"]
+    soup = website_scraper.BeautifulSoup(
+        """
+        <div class="mainRightInner announcement">
+          <ul>
+            <li><a href="/PersonalBusiness/CreditCards/Announcements/202607/t20260729_24601.shtml" title="关于东亚中国因系统维护暂停部分银行服务的公告">公告</a></li>
+            <li><a href="https://www.hkbea.com.cn/PersonalBusiness/CreditCards/SCC/" title="信用卡产品">信用卡产品</a></li>
+          </ul>
+        </div>
+        """,
+        "html.parser",
+    )
+    items = website_scraper._fallback_detail_links(
+        soup,
+        bank,
+        bank.list_url,
+    )
+    assert items == []
+    assert bank.is_low_value("关于东亚中国因系统维护暂停部分银行服务的公告")

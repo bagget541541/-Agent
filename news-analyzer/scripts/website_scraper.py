@@ -131,6 +131,7 @@ class BankConfig:
     detail_remove_selectors: list = field(default_factory=list)  # DOM 选择器列表，提取正文前删除这些节点（如面包屑、页脚）
     detail_start_markers: list = field(default_factory=list)     # 正文开头标记，文本层截取从此开始（如 ["尊敬的客户", "关于", "我行"]）
     detail_end_markers: list = field(default_factory=list)       # 正文结束标记，文本层截取到此结束（如 ["网站地图", "Copyright", "免责声明"]）
+    low_value_keywords: list = field(default_factory=list)      # 银行专属低价值标题关键词
 
     # URL 规则
     url_prefix_required: str = ""                # 链接必须包含此前缀（过滤非公告链接）
@@ -150,7 +151,7 @@ class BankConfig:
     def is_low_value(self, title: str, content: str = "") -> bool:
         """判断是否为低价值公告（数据库维护、电话更新等）。"""
         text = title or content[:200]
-        for kw in LOW_VALUE_KW_SUBSTRINGS:
+        for kw in (*LOW_VALUE_KW_SUBSTRINGS, *self.low_value_keywords):
             if kw in text:
                 return True
         return False
@@ -227,17 +228,24 @@ BANK_CONFIGS["中信银行"] = BankConfig(
 # ── 以下为从 banks_parser_v2.py 迁移的银行配置（排除恒丰/光大/工商） ──
 
 # 华夏银行（banks_parser_v2 中为纯静态列表页，通用选择器即可）
+# 华夏银行（官网公告列表与详情页使用独立容器，避免抓到右侧客服/导航）
 BANK_CONFIGS["华夏银行"] = BankConfig(
     name="华夏银行",
     short_name="华夏",
     list_url="https://creditcard.hxb.com.cn/card/cn/khfw/zygg/index.shtml",
     encoding="utf-8",
-    list_item_selector="li, tr, article",
-    link_selector=("a", "href"),
-    title_selector=("a", "text"),
-    date_selector=("span.date, .time, td:nth-child(2)", "text"),
+    list_item_selector=".news_list > li",
+    link_selector=(".list_left a", "href"),
+    title_selector=(".list_left a", "text"),
+    date_selector=(".list_right", "text"),
     date_format="%Y-%m-%d",
+    detail_title_selector=".Details_title, h1, .title",
+    detail_content_selector=".Details_main_main",
+    detail_remove_selectors=["script", "style", "nav", "footer", ".navigation", ".foot", ".inde_right"],
+    detail_start_markers=["尊敬的客户：", "尊敬的持卡人："],
+    detail_end_markers=["客户服务热线及投诉渠道", "Copyright 版权所有"],
     detail_url_pattern=r"/card/cn/khfw/zygg/\d{4}/\d{2}/\d+\.shtml$",
+    low_value_keywords=["债权转让公告", "外呼服务号码", "客服热线", "系统升级公告", "系统升级的公告", "服务升级的公告"],
 )
 
 # 浦发银行（banks_parser_v2 使用 Selenium，此处以 requests 尝试）
@@ -305,16 +313,25 @@ BANK_CONFIGS["兴业银行"] = BankConfig(
 )
 
 # 东亚银行（banks_parser_v2 中为纯静态列表页，通用选择器）
+# 东亚银行（官网列表只取公告详情链接，正文只取详情页主内容区）
 BANK_CONFIGS["东亚银行"] = BankConfig(
     name="东亚银行",
     short_name="东亚",
     list_url="https://www.hkbea.com.cn/PersonalBusiness/CreditCards/Announcements/",
     encoding="utf-8",
-    list_item_selector="li, tr, article",
-    link_selector=("a", "href"),
-    title_selector=("a", "text"),
-    date_selector=("span.date, .time, td:nth-child(2)", "text"),
+    list_item_selector=".mainRightInner.announcement li",
+    link_selector=("a[href*='/CreditCards/Announcements/20']", "href"),
+    title_selector=("a[href*='/CreditCards/Announcements/20']", "title"),
+    date_selector=(".date, .time", "text"),
     date_format="%Y-%m-%d",
+    detail_title_selector=".mainContentArea h1, .mainContentArea .title, h1, .title",
+    detail_date_selector=".mainContentArea .date, .date",
+    detail_content_selector=".mainContentArea, .main-content, .article-content",
+    detail_remove_selectors=["script", "style", "nav", "header", "footer", ".topPath", ".mianLeft", ".mainLeft"],
+    detail_start_markers=["尊敬的客户：", "尊敬的客户:", "为了给您"],
+    detail_end_markers=["网站地图", "Copyright", "电子营业执照及金融许可证"],
+    detail_url_pattern=r"/PersonalBusiness/CreditCards/Announcements/\d{6}/t\d{8}_\d+\.shtml$",
+    low_value_keywords=["系统维护暂停", "暂停部分银行服务", "暂停服务", "客服热线", "外呼服务号码"],
 )
 
 # 平安银行（banks_parser_v2 需先抓主页面再获取 iframe，此处用主页面 URL 默认选择器尝试）
