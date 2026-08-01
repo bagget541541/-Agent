@@ -164,14 +164,22 @@ def _is_garbage_line(line: str) -> bool:
         r"^关于我们",
         r"^人才招聘",
         r"^地址[：:]",
-        r"^免费申请$",
+        r"^免费申请\s*$",
         r"^下一篇",
+        r"^原文链接",
+        r"^在线客服",
+        r"^联系我们",
+        r"^法律声明",
+        r"^隐私政策",
+        r"^服务条款",
         r"^中[信农]银行[·•]",
         r"^农业银行[·•]",
         r"^建设银行[·•]",
-        r"[各银行名称].*?主题.*?信用卡$",
+        r"^[银农信中建光华招平浦兴汇工民].*?主题.*?信用卡$",
         r"^[^：：]*银行.*?信用卡\s*$",
         r"^[^：：]*[·•].*?信用卡\s*(申请|激活|详情)",
+        r"^(北京|上海|浙江|江苏|广东|福建)市\s*$",
+        r"^(天津|重庆|西安|成都|杭州|南京)\s*$",
         r"^上海市",
         r"^浙江省",
         r"^江苏省",
@@ -179,13 +187,37 @@ def _is_garbage_line(line: str) -> bool:
         r"^（回复.{1,10}可查看详情）$",
         r"^点击阅读原文",
         r"^更多内容敬请关注",
-        r"^编辑：",
-        r"^来源：",
+        r"^编辑[：:]",
+        r"^来源[：:]",
     ]
     for pattern in garbage_patterns:
         if re.match(pattern, stripped, re.I):
             return True
     return False
+
+
+def _clean_highlight(text: str) -> str:
+    """清理和优化亮点字段（去除垃圾、补全句子、限制长度）。"""
+    # 1. 移除附件和门户网址引用
+    text = re.sub(r"附件[\s：:]*", "", text)
+    text = re.sub(r"查看附近适用门店.*?[)）]", "", text)
+    text = re.sub(r"点击.*?APP.*?[)）]", "", text)
+
+    # 2. 规范化空格
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # 3. 移除末尾未闭合的引号，并补全不完整的句子
+    text = re.sub(r"['\"”’]\s*$", "", text)
+    if not text.endswith(("。", "？", "！", ".", ")")):
+        sentences = re.split(r"[。？！]", text)
+        if len(sentences) > 1:
+            text = "。".join(sentences[:-1]) + "。" if sentences[:-1] else text
+
+    # 4. 限制长度到 100 字
+    if len(text) > 100:
+        text = text[:100].rstrip() + "…"
+
+    return text
 
 
 def _clean_publish_body(body: str) -> str:
@@ -218,7 +250,9 @@ def _clean_publish_body(body: str) -> str:
 
         highlight_match = re.match(r"^\*\*亮点[：:]\*\*\s*(.*)$", stripped)
         if highlight_match:
-            kept.append(f"**亮点：** {_truncate_text(highlight_match.group(1), limit=150, sentences=2)}")
+            highlight_text = _clean_highlight(highlight_match.group(1))
+            if highlight_text:
+                kept.append(f"**亮点：** {highlight_text}")
             continue
 
         bullet_match = re.match(r"^-\s+\*\*([^*]+)\*\*\s*[：:]\s*(.*)$", stripped)
@@ -229,6 +263,9 @@ def _clean_publish_body(body: str) -> str:
         if bullet_match:
             field = bullet_match.group(1).strip()
             value = bullet_match.group(2).strip()
+            # 隐藏内部标记字段（以 _ 开头，如 _low_value）
+            if field.startswith("_"):
+                continue
             if field in drop_structured_fields:
                 dropping = True
                 continue
