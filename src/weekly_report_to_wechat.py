@@ -602,6 +602,12 @@ def _render_semantic(b: dict) -> str:
             f'<a href="{esc(url)}" style="color:#0ea5e9;text-decoration:none">{esc(url)}</a></div>'
         )
 
+    # 清理语义块中的垃圾内容
+    body = re.sub(r"附件[\s：:]*[^\n]*", "", body)          # 附件引用
+    body = re.sub(r"（?点击[^）)]*[)）]", "", body)           # 门户/APP 引用
+    body = re.sub(r"查看附近适用门店.*?[)）]", "", body)     # 门店引用
+    body = re.sub(r"\s+", " ", body).strip()
+
     # 对 body 进行截断处理
     body = _truncate_semantic_body(prefix, body)
     rendered_body = inline(body)

@@ -133,11 +133,13 @@ if highlight_match:
 2. **P0-2**：`_clean_publish_body()` 新增 `field.startswith("_")` 跳过逻辑
 3. **P0-3**：新增 `_clean_highlight()`，亮点改用该函数处理（含全角/半角括号兼容）
 
-### 后续剩余工作（P1，本周）
+### P1 优化（已完成 2026-08-01）
 
-- **P1-1**：修复活动时间字段（`_extract_activity_time`，准确率 30% → 95%）
-- **P1-2**：调整去重相似度阈值（活动类 0.8 → 0.75）
-- **P1-3**：改进 `weekly_report_to_wechat.py` 的 semantic 块清理
+- **P1-1**：✅ 新增 `_extract_activity_time()` 修复活动时间字段（支持 4 种日期格式，10 条活动全部提取成功）
+- **P1-2**：✅ 新增 `_should_deduplicate()` 按分类调整去重阈值（活动类 0.75），条目 16 → 13
+- **P1-3**：✅ `weekly_report_to_wechat.py` 的 `_render_semantic()` 增加垃圾清理
+
+详见 `docs/P1_OPTIMIZATION_PLAN.md`。
 
 ---
 

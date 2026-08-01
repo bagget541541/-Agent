@@ -109,6 +109,16 @@ def _similarity_score(s1: str, s2: str) -> float:
     return common / total if total > 0 else 0.0
 
 
+def _should_deduplicate(title1: str, title2: str, category: str) -> bool:
+    """判断是否应该去重，考虑分类信息。"""
+    score = _similarity_score(title1, title2)
+    # 活动/优惠类标题相似度高（如多个"农业银行 xxx 活动"），采用更激进的阈值
+    if "活动" in category or "优惠" in category:
+        return score > 0.75
+    # 其他类保持原阈值
+    return score > 0.8
+
+
 def _extract_activity_essence(title: str, body: str) -> str:
     """从活动内容中提取核心要素（时间、门槛、奖励）。"""
     essence = []
@@ -139,6 +149,28 @@ def _extract_activity_essence(title: str, body: str) -> str:
 
     if essence:
         return " | ".join(essence)
+    return ""
+
+
+def _extract_activity_time(body: str) -> str:
+    """从活动内容中提取实际活动时间（而非发布时间）。"""
+    date = r"\d{4}[年.\-/]\d{1,2}[月.\-/]\d{1,2}日?"
+    # 1. 结构化字段：- **活动时间**：2026.07.31
+    m = re.search(r"\*\*活动时间\*\*\s*[：:]\s*([^\n]+)", body)
+    if m:
+        return m.group(1).strip().rstrip("。；;")
+    # 2. 显式标签：活动时间/活动期间：...
+    m = re.search(r"活动(?:时间|期间)[：:]\s*([^\n。；;]+)", body)
+    if m:
+        return m.group(1).strip().rstrip("。；;")
+    # 3. 区间：自X至Y / X至Y
+    m = re.search(r"(?:自)?(" + date + r")[^。；;\n]*?至(" + date + r")", body)
+    if m:
+        return f"{m.group(1)}至{m.group(2)}"
+    # 4. 兜底：正文首次出现的完整日期
+    m = re.search(date, body)
+    if m:
+        return m.group(0)
     return ""
 
 
@@ -335,7 +367,8 @@ def _extract_publish_items(md: str) -> list[dict]:
             if stripped.startswith("**来源") or stripped.startswith("来源："):
                 continue
             body_lines.append(line)
-        body = _clean_publish_body("\n".join(body_lines).strip())
+        raw_body = "\n".join(body_lines).strip()
+        body = _clean_publish_body(raw_body)
         category = ""
         m = re.search(r"\*\*属性\*\*\s*[：:]\s*([^｜|\n]+)", body)
         if m:
@@ -346,7 +379,17 @@ def _extract_publish_items(md: str) -> list[dict]:
         if not category:
             previous_h2 = [name for line_no, name in h2_categories if line_no < start]
             category = previous_h2[-1] if previous_h2 else "其他"
-        items.append({"title": title, "category": category, "body": body, "source_url": source_url})
+        activity_time = _extract_activity_time(raw_body) if ("活动" in category or "优惠" in category) else ""
+        if activity_time:
+            # 移除正文中已有的活动时间字段行，由 build_publish_markdown 统一输出
+            body = re.sub(r"^-?\s*\*\*活动时间\*\*\s*[：:]\s*[^\n]*", "", body, flags=re.M).strip()
+        items.append({
+            "title": title,
+            "category": category,
+            "body": body,
+            "source_url": source_url,
+            "activity_time": activity_time,
+        })
     return items
 
 
@@ -359,7 +402,7 @@ def build_publish_markdown(md: str, title: str = "") -> tuple[str, str]:
     for i, item in enumerate(items):
         is_duplicate = False
         for j in range(i):
-            if _similarity_score(item["title"], items[j]["title"]) > 0.8:
+            if _should_deduplicate(item["title"], items[j]["title"], item["category"]):
                 # 标记为重复但不跳过，而是添加重复标记
                 is_duplicate = True
                 break
@@ -370,6 +413,10 @@ def build_publish_markdown(md: str, title: str = "") -> tuple[str, str]:
     # 内容提炼：对活动类条目提取核心要素
     for item in deduplicated:
         if "活动" in item["category"] or "优惠" in item["category"]:
+            # 插入实际活动时间（若有）
+            activity_time = item.get("activity_time", "")
+            if activity_time and "**活动时间：**" not in item["body"]:
+                item["body"] = f"**活动时间：** {activity_time}\n\n{item['body']}"
             essence = _extract_activity_essence(item["title"], item["body"])
             if essence:
                 # 在亮点前添加提炼的内容
