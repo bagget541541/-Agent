@@ -608,6 +608,10 @@ def _render_semantic(b: dict) -> str:
     body = re.sub(r"查看附近适用门店.*?[)）]", "", body)     # 门店引用
     body = re.sub(r"\s+", " ", body).strip()
 
+    # 清理后重新判空：body 可能全部是垃圾内容而被清空
+    if not body and not links:
+        return ""
+
     # 对 body 进行截断处理
     body = _truncate_semantic_body(prefix, body)
     rendered_body = inline(body)

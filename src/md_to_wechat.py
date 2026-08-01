@@ -109,11 +109,14 @@ def _similarity_score(s1: str, s2: str) -> float:
     return common / total if total > 0 else 0.0
 
 
-def _should_deduplicate(title1: str, title2: str, category: str) -> bool:
-    """判断是否应该去重，考虑分类信息。"""
+def _should_deduplicate(title1: str, title2: str, category1: str, category2: str) -> bool:
+    """判断是否应该去重：仅对类别相同的条目去重，并考虑分类阈值。"""
+    # 类别不同（如新卡 vs 活动）不互相去重，避免跨类别误删相似标题
+    if category1 != category2:
+        return False
     score = _similarity_score(title1, title2)
     # 活动/优惠类标题相似度高（如多个"农业银行 xxx 活动"），采用更激进的阈值
-    if "活动" in category or "优惠" in category:
+    if "活动" in category1 or "优惠" in category1:
         return score > 0.75
     # 其他类保持原阈值
     return score > 0.8
@@ -155,14 +158,29 @@ def _extract_activity_essence(title: str, body: str) -> str:
 def _extract_activity_time(body: str) -> str:
     """从活动内容中提取实际活动时间（而非发布时间）。"""
     date = r"\d{4}[年.\-/]\d{1,2}[月.\-/]\d{1,2}日?"
-    # 1. 结构化字段：- **活动时间**：2026.07.31
+    date_short = r"(?:\d{4}[年.\-/])?\d{1,2}[月.\-/]\d{1,2}日?"
+    # 时间短语：起始日期允许省略年份（如 6月1日），后接可选"至/~/~"区间（区间日期同样允许省略年份）
+    time_phrase = r"(?:" + date_short + r")(?:\s*[至~-]\s*(?:" + date_short + r"))?"
+
+    def _match_time(value: str) -> str:
+        """从字段值中提取日期区间/时间短语，丢弃附加文本。"""
+        m = re.search(time_phrase, value)
+        if m:
+            return m.group(0).strip()
+        return ""
+
+    # 1. 结构化字段：- **活动时间**：2026.07.31（可能带"周末有效"等附加文本）
     m = re.search(r"\*\*活动时间\*\*\s*[：:]\s*([^\n]+)", body)
     if m:
-        return m.group(1).strip().rstrip("。；;")
-    # 2. 显式标签：活动时间/活动期间：...
+        r = _match_time(m.group(1))
+        if r:
+            return r
+    # 2. 显式标签：活动时间/活动期间：...（同样只取日期部分）
     m = re.search(r"活动(?:时间|期间)[：:]\s*([^\n。；;]+)", body)
     if m:
-        return m.group(1).strip().rstrip("。；;")
+        r = _match_time(m.group(1))
+        if r:
+            return r
     # 3. 区间：自X至Y / X至Y
     m = re.search(r"(?:自)?(" + date + r")[^。；;\n]*?至(" + date + r")", body)
     if m:
@@ -207,9 +225,12 @@ def _is_garbage_line(line: str) -> bool:
         r"^中[信农]银行[·•]",
         r"^农业银行[·•]",
         r"^建设银行[·•]",
-        r"^[银农信中建光华招平浦兴汇工民].*?主题.*?信用卡$",
-        r"^[^：：]*银行.*?信用卡\s*$",
-        r"^[^：：]*[·•].*?信用卡\s*(申请|激活|详情)",
+        # 推卡菜单：银行名+主题信用卡（排除含动词的正文标题，如"中国银行发布新款主题信用卡"）
+        r"^(中信银行|农业银行|建设银行|工商银行|中国银行|招商银行|兴业银行|民生银行|浦发银行|光大银行|华夏银行|交通银行|邮储银行|平安银行|广发银行|汇丰银行|花旗银行|北京银行|上海银行|宁波银行|江苏银行|浙商银行|渤海银行|恒丰银行|微众银行|网商银行)(?![^，。；：:！？\n]*?(?:发布|推出|新增|发行|上线|上架|公告|调整|宣传|活动)).*?主题.*?信用卡\s*$",
+        # 菜单项：银行名+卡名（短行、无动词/句子标点），如"中信银行银联标准IC信用卡"
+        # 负向前瞻排除正文标题（含 发布/推出/新增/发行/公告 等动词的行）
+        r"^[^：:]{0,12}银行(?![^，。；：:！？\n]*?(?:发布|推出|新增|发行|上线|上架|公告|调整|宣传|活动))[^，。；：:！？\n]{0,15}信用卡\s*$",
+        r"^[^：:]*[·•].*?信用卡\s*(申请|激活|详情)",
         r"^(北京|上海|浙江|江苏|广东|福建)市\s*$",
         r"^(天津|重庆|西安|成都|杭州|南京)\s*$",
         r"^上海市",
@@ -245,9 +266,9 @@ def _clean_highlight(text: str) -> str:
         if len(sentences) > 1:
             text = "。".join(sentences[:-1]) + "。" if sentences[:-1] else text
 
-    # 4. 限制长度到 100 字
+    # 4. 限制长度到 100 字（99 字 + 省略号 = 100）
     if len(text) > 100:
-        text = text[:100].rstrip() + "…"
+        text = text[:99].rstrip() + "…"
 
     return text
 
@@ -402,7 +423,7 @@ def build_publish_markdown(md: str, title: str = "") -> tuple[str, str]:
     for i, item in enumerate(items):
         is_duplicate = False
         for j in range(i):
-            if _should_deduplicate(item["title"], items[j]["title"], item["category"]):
+            if _should_deduplicate(item["title"], items[j]["title"], item["category"], items[j]["category"]):
                 # 标记为重复但不跳过，而是添加重复标记
                 is_duplicate = True
                 break
