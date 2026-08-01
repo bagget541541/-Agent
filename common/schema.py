@@ -154,6 +154,18 @@ class CreditCardItem:
         fee_assessment: str = "",
         worth_applying: Optional[list[dict]] = None,
         priority_emoji: str = "",
+        # Mode C: 提取状态与溯源字段（规范 7.3/7.4/7.7）
+        source_url: str = "",
+        canonical_url: str = "",
+        url_hash: str = "",
+        fetch_status: str = "",
+        ocr_status: str = "",
+        extraction_status: str = "",
+        content_text_ratio: float = 0.0,
+        image_count: int = 0,
+        evidence_coverage: float = 0.0,
+        review_reasons: Optional[list[str]] = None,
+        field_evidence: Optional[list[dict]] = None,
     ):
         self.source = source
         self.source_type = source_type or _auto_source_type(source)
@@ -197,6 +209,18 @@ class CreditCardItem:
         self.fee_assessment = fee_assessment
         self.worth_applying = worth_applying or []
         self.priority_emoji = priority_emoji
+        # Mode C: 提取状态与溯源字段
+        self.source_url = source_url
+        self.canonical_url = canonical_url
+        self.url_hash = url_hash
+        self.fetch_status = fetch_status
+        self.ocr_status = ocr_status
+        self.extraction_status = extraction_status
+        self.content_text_ratio = float(content_text_ratio or 0.0)
+        self.image_count = int(image_count or 0)
+        self.evidence_coverage = float(evidence_coverage or 0.0)
+        self.review_reasons = review_reasons or []
+        self.field_evidence = field_evidence or []
 
     # ── 序列化 ────────────────────────────────────────
 
@@ -241,6 +265,17 @@ class CreditCardItem:
             "fee_assessment": self.fee_assessment,
             "worth_applying": self.worth_applying,
             "priority_emoji": self.priority_emoji,
+            "source_url": self.source_url,
+            "canonical_url": self.canonical_url,
+            "url_hash": self.url_hash,
+            "fetch_status": self.fetch_status,
+            "ocr_status": self.ocr_status,
+            "extraction_status": self.extraction_status,
+            "content_text_ratio": self.content_text_ratio,
+            "image_count": self.image_count,
+            "evidence_coverage": self.evidence_coverage,
+            "review_reasons": self.review_reasons,
+            "field_evidence": self.field_evidence,
         }
 
     @classmethod
@@ -285,6 +320,17 @@ class CreditCardItem:
             fee_assessment=d.get("fee_assessment", ""),
             worth_applying=d.get("worth_applying"),
             priority_emoji=d.get("priority_emoji", ""),
+            source_url=d.get("source_url", ""),
+            canonical_url=d.get("canonical_url", ""),
+            url_hash=d.get("url_hash", ""),
+            fetch_status=d.get("fetch_status", ""),
+            ocr_status=d.get("ocr_status", ""),
+            extraction_status=d.get("extraction_status", ""),
+            content_text_ratio=d.get("content_text_ratio", 0.0),
+            image_count=d.get("image_count", 0),
+            evidence_coverage=d.get("evidence_coverage", 0.0),
+            review_reasons=d.get("review_reasons"),
+            field_evidence=d.get("field_evidence"),
         )
 
     def __repr__(self) -> str:

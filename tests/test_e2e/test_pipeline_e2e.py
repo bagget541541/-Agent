@@ -11,10 +11,29 @@ import os
 import sys
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from common.normalizer import normalize_item, normalize_batch
 from common.schema import CreditCardItem, CreditCardBatch
+
+
+@pytest.fixture(autouse=True)
+def _no_image_download():
+    """测试用 example.com 假图片 URL；patch centralize_images 跳过真实网络下载。
+
+    normalize_item 的 P0-4 会把远程图片 URL 集中下载到本地，example.com
+    无法连通导致测试挂起数十秒。此处保持原列表（不下载、不复制），
+    使 test_wechat_new_card_full_chain 的 len(item.images) > 0 仍成立。
+    """
+    from common import images as images_mod
+    with patch.object(
+        images_mod,
+        "centralize_images",
+        side_effect=lambda imgs, item_id: list(imgs),
+    ):
+        yield
 
 
 # ═══════════════════════════════════════════════════════════

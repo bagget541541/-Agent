@@ -1,6 +1,21 @@
 # 修订记录
 ## Unreleased
 
+### Mode C：公众号文章解析落地（2026-08-01）
+
+- 新增 `common/extraction.py`：字段级 Evidence 契约、`extraction_status` 枚举、URL 规范化（canonical_url/url_hash/article_id）与 ContentBlock 规范
+- 新增 `common/wechat_fetch.py`：L1 直抓（UA/超时/重试/大小限制/协议校验）、元数据解析、正文图片化检测、按 url_hash 幂等缓存
+- 新增 `common/ocr.py`：L2 OCR（rapidocr 封装、断点续跑持久化、图片哈希去重、置信度聚合、过滤规则可配置、引擎失速保护）
+- 新增 `common/extraction_gate.py`：失败状态隔离（FETCH_FAILED/OCR_FAILED 禁止生成活动事实）、证据覆盖率检查、批量门禁（URL 串稿=0 等）
+- 新增 `common/title_gate.py`：标题-正文一致性门禁（块级匹配+OCR 容错+营销标题降级，低分只入复核不丢弃）、质量评分 A-D
+- 新增 `common/mode_c_pipeline.py`：编排 L1 抓取 → L2 OCR → content_blocks → 字段级证据 → ArticleEnvelope
+- 扩展 `common/schema.py` / `common/article_envelope.py`：CreditCardItem 新增 13 个提取溯源字段（source_url/canonical_url/url_hash/fetch_status/ocr_status/extraction_status/evidence_coverage/field_evidence 等），向后兼容
+- `src/agent.py step3_merge()`：wechat 分支接入 mode_c 链路——纯图片文章自动 OCR，失败状态隔离跳过；`common/normalizer.py` 透传溯源字段
+- 新增回归样本与验收：`data/regression/mode_c_20260801/`（8 篇文章 HTML/图片/OCR/期望标签 + manifest），`scripts/debug/run_mode_c_regression.py` 验收脚本；8/8 全部 A 级、关键事实命中率 89.2%、门禁违规 0
+- 代码审查修复：证据字段级放行（P0-1）、下游未放行视图隔离（P0-2）、生成器 total（P1-3）、OCR 超时线程积压（P1-4）、引擎初始化锁与进度文件并发
+- 修复既有测试：`md_to_wechat.py` 活动时间字段格式统一为 `**活动时间**：`；`test_e2e` 增加 fixture 跳过假图片 URL 的真实网络下载
+- 新增 `tests/test_common/test_mode_c.py`（29 条用例）；全量测试 646 passed, 1 skipped
+
 ### Mode C：银行官网公告提取优化
 
 - 华夏银行改用官网公告列表和详情正文专用容器，避免导航、客服区和模板文本污染。

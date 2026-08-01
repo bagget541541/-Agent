@@ -579,6 +579,18 @@ def normalize_item(
         evidence=evidence,
         noise_flags=noise_flags,
         category_candidates=category_candidates,
+        # ── Mode C 溯源字段透传（raw_item 来自 mode_c_pipeline 时携带） ──
+        source_url=raw_item.get("source_url", ""),
+        canonical_url=raw_item.get("canonical_url", ""),
+        url_hash=raw_item.get("url_hash", ""),
+        fetch_status=raw_item.get("fetch_status", ""),
+        ocr_status=raw_item.get("ocr_status", ""),
+        extraction_status=raw_item.get("extraction_status", ""),
+        content_text_ratio=raw_item.get("content_text_ratio", 0.0),
+        image_count=raw_item.get("image_count", 0),
+        evidence_coverage=raw_item.get("evidence_coverage", 0.0),
+        review_reasons=raw_item.get("review_reasons") or [],
+        field_evidence=raw_item.get("field_evidence") or [],
     )
 
     # 自动标记审核项

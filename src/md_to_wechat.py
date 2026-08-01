@@ -436,8 +436,8 @@ def build_publish_markdown(md: str, title: str = "") -> tuple[str, str]:
         if "活动" in item["category"] or "优惠" in item["category"]:
             # 插入实际活动时间（若有）
             activity_time = item.get("activity_time", "")
-            if activity_time and "**活动时间：**" not in item["body"]:
-                item["body"] = f"**活动时间：** {activity_time}\n\n{item['body']}"
+            if activity_time and "**活动时间**：" not in item["body"]:
+                item["body"] = f"**活动时间**： {activity_time}\n\n{item['body']}"
             essence = _extract_activity_essence(item["title"], item["body"])
             if essence:
                 # 在亮点前添加提炼的内容

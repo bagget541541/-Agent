@@ -1,0 +1,148 @@
+{
+ "regression_id": "mode_c_20260801",
+ "description": "2026-08-01 8篇银行公众号文章回归样本（依据OCR核对结论标注期望）",
+ "generated_at": "2026-08-01",
+ "articles": [
+  {
+   "url": "https://mp.weixin.qq.com/s/W8TDbtGoDfJ_O-HON1Vkkg",
+   "label": "兴业全攻略",
+   "expected_topic": "兴业生活APP美食购物出行缴费优惠",
+   "expected_key_facts": [
+    "美团外卖周三可享免单",
+    "朴朴超市满50元可减2~20元",
+    "淘宝闪购5折红包",
+    "京东满100元可减2~20元",
+    "12306车票满150元可减2~20元",
+    "手机充值满100元可减3~20元",
+    "生活缴费满50元可减4元",
+    "滴滴青桔低至1分钱骑行"
+   ],
+   "expected_status": "SUCCESS",
+   "notes": "正文图片化，需 OCR；原文档大部分内容与 OCR 吻合",
+   "url_hash": "e6d70cde2ba24b65",
+   "html_file": "html/e6d70cde2ba24b65.html",
+   "images_dir": "images/W8TDbtGoDfJ_O-HON1Vkkg",
+   "ocr_file": "ocr/W8TDbtGoDfJ_O-HON1Vkkg.json"
+  },
+  {
+   "url": "https://mp.weixin.qq.com/s/aFkxvnAY-NhWdolWqfVLRg",
+   "label": "广发智汇卡",
+   "expected_topic": "广发智汇卡焕新AI算力升级",
+   "expected_key_facts": [
+    "自选商户消费2倍积分（购物/餐饮/旅游三选一）",
+    "分期高至8倍积分（尊享白8倍/普卡白金5倍）",
+    "每月消费一笔满18元，高至99%积分抵扣兑AI商品",
+    "智能数码商品高至24期免息分期"
+   ],
+   "expected_status": "SUCCESS",
+   "notes": "正文图片化，需 OCR；原文档遗漏新户260元礼金等",
+   "url_hash": "70928f14d3b96309",
+   "html_file": "html/70928f14d3b96309.html",
+   "images_dir": "images/aFkxvnAY-NhWdolWqfVLRg",
+   "ocr_file": "ocr/aFkxvnAY-NhWdolWqfVLRg.json"
+  },
+  {
+   "url": "https://mp.weixin.qq.com/s/S2evuxyWcqCLeM397WP1YQ",
+   "label": "长安银行文旅",
+   "expected_topic": "景区秒杀与20元折扣券每周三开抢",
+   "expected_key_facts": [
+    "活动时间2026年7月29日-9月30日",
+    "每周三10:00景区门票秒杀（故宫/大熊猫基地20元起）",
+    "每位客户每周限领2张20元优惠券"
+   ],
+   "expected_status": "SUCCESS",
+   "notes": "事故样本：原文档写成银行产品介绍（主题错配）",
+   "url_hash": "7bb229474c69f984",
+   "html_file": "html/7bb229474c69f984.html",
+   "images_dir": "images/S2evuxyWcqCLeM397WP1YQ",
+   "ocr_file": "ocr/S2evuxyWcqCLeM397WP1YQ.json"
+  },
+  {
+   "url": "https://mp.weixin.qq.com/s/rnguLseiK3Zv4k6YKr6qaQ",
+   "label": "北京农商夏令营",
+   "expected_topic": "游美青少年夏令营招募",
+   "expected_key_facts": [
+    "6大爆款营地全线开抢",
+    "福享金分期最高立省4000元",
+    "12期0息分期"
+   ],
+   "expected_status": "SUCCESS",
+   "notes": "事故样本：原文档写成系统升级/积分公告（主题错配）",
+   "url_hash": "3388c340335de999",
+   "html_file": "html/3388c340335de999.html",
+   "images_dir": "images/rnguLseiK3Zv4k6YKr6qaQ",
+   "ocr_file": "ocr/rnguLseiK3Zv4k6YKr6qaQ.json"
+  },
+  {
+   "url": "https://mp.weixin.qq.com/s/8TRmp_0xp3MqEp_U9m_Oww",
+   "label": "上海银行立减",
+   "expected_topic": "支付立减及积分抵现双重福利",
+   "expected_key_facts": [
+    "即日起至2026年9月30日",
+    "抖音随机立减1-10元",
+    "京东满199元随机立减1-99元",
+    "拼多多满60元随机立减1-10元",
+    "积分抵现100积分抵0.1元，抖音/京东单月至高抵50元",
+    "公交地铁云闪付乘车码单笔至高88折"
+   ],
+   "expected_status": "SUCCESS",
+   "notes": "事故样本：原文档缺失积分抵现整块内容",
+   "url_hash": "ccd59c93c71ee36f",
+   "html_file": "html/ccd59c93c71ee36f.html",
+   "images_dir": "images/8TRmp_0xp3MqEp_U9m_Oww",
+   "ocr_file": "ocr/8TRmp_0xp3MqEp_U9m_Oww.json"
+  },
+  {
+   "url": "https://mp.weixin.qq.com/s/kLwq9P2wwLBRL3FV32ZnVA",
+   "label": "农行夏日好礼",
+   "expected_topic": "夏日狂欢季信用卡福利合集",
+   "expected_key_facts": [
+    "KIMI联名卡新客消费3笔每笔18元领新客礼",
+    "KIMI高端白金卡消费满5888元领开卡礼",
+    "万事达尊然白金卡（智享AI版）消费满5888元双重开卡礼",
+    "月月返现报名消费满5000元，至高300元刷卡金券",
+    "积分抵现1000积分抵1元，单笔至高抵20元"
+   ],
+   "expected_status": "SUCCESS",
+   "notes": "原文档加油满减/Visa全球支付白等细节无法从原文验证",
+   "url_hash": "2c9fd6f59b2a4dcb",
+   "html_file": "html/2c9fd6f59b2a4dcb.html",
+   "images_dir": "images/kLwq9P2wwLBRL3FV32ZnVA",
+   "ocr_file": "ocr/kLwq9P2wwLBRL3FV32ZnVA.json"
+  },
+  {
+   "url": "https://mp.weixin.qq.com/s/hJG9oEwSZ9l0PijUfMZlbA",
+   "label": "兴业兴运月月抽",
+   "expected_topic": "兴运月月抽至高88元刷卡金券包",
+   "expected_key_facts": [
+    "即日起至8月31日",
+    "每月可抽一次",
+    "至高88元刷卡金券包，面额随机发放"
+   ],
+   "expected_status": "SUCCESS",
+   "notes": "事故样本：原文档与兴业全攻略串稿（写入美团立减）",
+   "url_hash": "2eacffec13e78bac",
+   "html_file": "html/2eacffec13e78bac.html",
+   "images_dir": "images/hJG9oEwSZ9l0PijUfMZlbA",
+   "ocr_file": "ocr/hJG9oEwSZ9l0PijUfMZlbA.json"
+  },
+  {
+   "url": "https://mp.weixin.qq.com/s/ZE-LambLp2-45jTxoJMg0g",
+   "label": "中行飞汇缴费",
+   "expected_topic": "飞汇留学缴费补贴与跨境返现",
+   "expected_key_facts": [
+    "飞汇官网选择中行银联信用卡缴纳学费享补贴",
+    "卓隽卡笔笔返1%消费金无上限",
+    "留学缴费超额返6%",
+    "卓隽卡留学缴费超额返10%",
+    "境外线下消费返3%消费金"
+   ],
+   "expected_status": "SUCCESS",
+   "notes": "事故样本：原文档写成越刷月返/白金赠礼（主题错配）",
+   "url_hash": "db30c02b1aadafd8",
+   "html_file": "html/db30c02b1aadafd8.html",
+   "images_dir": "images/ZE-LambLp2-45jTxoJMg0g",
+   "ocr_file": "ocr/ZE-LambLp2-45jTxoJMg0g.json"
+  }
+ ]
+}

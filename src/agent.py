@@ -37,6 +37,7 @@ from common.normalizer import normalize_item, normalize_topic
 from common.review import export_review_queue
 from common.article_envelope import build_article_envelope
 from common.topic_splitter import detect_multi_topic, split_article_into_topics, detect_multi_topic_from_raw_text
+from common.mode_c_pipeline import extract_article, envelope_to_raw_item
 from rag_query import query_for_suggestions
 
 
@@ -673,6 +674,59 @@ def step2_fetch_bank_news(days: int = 7) -> list[dict]:
         return []
 
 
+def _mode_c_enrich_wechat(article: dict) -> dict | None:
+    """Mode C 提取链路接入：纯图片文章补 OCR，失败状态隔离。
+
+    规则（对应 mode_c 规范 7.4）：
+    - 已有正文/ content_blocks → 只补溯源字段（url_hash / canonical_url /
+      extraction_status），不重新抓取；
+    - 纯图片文章（无正文文本）→ 走 extract_article（L1 抓取 + L2 OCR）补全；
+    - FETCH_FAILED / OCR_FAILED → 返回 None（调用方跳过，不生成活动事实）。
+
+    Returns:
+        增强后的 article dict；失败状态返回 None。
+    """
+    url = article.get("url", "")
+    content_blocks = article.get("content_blocks") or []
+    content_text = article.get("content_text") or article.get("full_text") or article.get("text") or ""
+
+    # 有正文或已有 content_blocks → 只补溯源字段
+    if content_blocks or content_text.strip():
+        env = build_article_envelope(
+            url=url,
+            publisher_name=article.get("account_name", ""),
+            publish_time=article.get("fetched_at", ""),
+            raw_title=article.get("title", ""),
+            content_blocks=content_blocks,
+            images=article.get("images", []),
+        )
+        raw = envelope_to_raw_item({**env, "body_text": content_text})
+        return {**article, **raw}
+
+    # 纯图片文章 → mode_c 提取
+    if not url:
+        return article  # 无 URL 无法提取，保留原文由既有链路兜底
+    try:
+        env = extract_article(
+            url,
+            images=article.get("images") or [],
+            raw_title=article.get("title", ""),
+            publisher_name=article.get("account_name", ""),
+            use_cache=True,
+        )
+    except Exception as e:
+        print(f"  [ModeC] 提取异常 {url[:60]}: {e}")
+        return article
+
+    status = env.get("extraction_status", "")
+    if status in ("FETCH_FAILED", "OCR_FAILED"):
+        reason = env.get("error") or "; ".join(env.get("review_reasons") or [])
+        print(f"  [ModeC] 跳过 {url[:60]}: {status} - {reason[:80]}")
+        return None
+    raw = envelope_to_raw_item(env)
+    return {**article, **raw}
+
+
 def step3_merge(wechat_articles: list, bank_announcements: list,
                 webpage_articles: list = None,
                 batch_label: str = "") -> CreditCardBatch:
@@ -698,6 +752,13 @@ def step3_merge(wechat_articles: list, bank_announcements: list,
 
     # Convert WeChat articles via normalizer (支持多主题拆分)
     for article in wechat_articles:
+        # ── Mode C 接入：补 OCR / 溯源字段 / 失败隔离 ──
+        enriched = _mode_c_enrich_wechat(article)
+        if enriched is None:
+            # FETCH_FAILED / OCR_FAILED → 失败隔离，跳过且不生成活动事实
+            continue
+        article = enriched
+
         content_blocks = article.get("content_blocks") or []
         if content_blocks:
             # 有 content_blocks → 走多主题拆分链路

@@ -1,0 +1,448 @@
+{
+ "regression_id": "mode_c_20260801",
+ "generated_at": "2026-08-01",
+ "total_articles": 8,
+ "summary": {
+  "avg_key_fact_hit_rate": 0.892,
+  "topic_mismatch_count": 0,
+  "low_title_consistency_count": 0,
+  "high_quality_count": 8,
+  "downstream_safe": 8,
+  "failed_state_count": 0,
+  "url_duplicate_count": 0,
+  "gate_violations": 0
+ },
+ "results": [
+  {
+   "article_id": "wx_3eb8ef3d63eb",
+   "label": "兴业全攻略",
+   "url": "https://mp.weixin.qq.com/s/W8TDbtGoDfJ_O-HON1Vkkg",
+   "expected_topic": "兴业生活APP美食购物出行缴费优惠",
+   "actual_title": "“兴业生活”App｜美食・购物・出行・缴费超省钱全攻略！",
+   "key_facts": 8,
+   "key_facts_total": 8,
+   "topic_matched": true,
+   "title_consistency_score": 1.0,
+   "title_consistency_level": "high",
+   "quality_total": 0.99,
+   "quality_level": "A",
+   "evidence_coverage": 1.0,
+   "extraction_status": "SUCCESS",
+   "ocr_confidence": 0.9,
+   "key_fact_details": [
+    {
+     "fact": "美团外卖周三可享免单",
+     "hit": true,
+     "tokens": []
+    },
+    {
+     "fact": "朴朴超市满50元可减2~20元",
+     "hit": true,
+     "tokens": [
+      "50元",
+      "20元"
+     ]
+    },
+    {
+     "fact": "淘宝闪购5折红包",
+     "hit": true,
+     "tokens": [
+      "5折"
+     ]
+    },
+    {
+     "fact": "京东满100元可减2~20元",
+     "hit": true,
+     "tokens": [
+      "100元",
+      "20元"
+     ]
+    },
+    {
+     "fact": "12306车票满150元可减2~20元",
+     "hit": true,
+     "tokens": [
+      "150元",
+      "20元"
+     ]
+    },
+    {
+     "fact": "手机充值满100元可减3~20元",
+     "hit": true,
+     "tokens": [
+      "100元",
+      "20元"
+     ]
+    },
+    {
+     "fact": "生活缴费满50元可减4元",
+     "hit": true,
+     "tokens": [
+      "50元",
+      "4元"
+     ]
+    },
+    {
+     "fact": "滴滴青桔低至1分钱骑行",
+     "hit": true,
+     "tokens": []
+    }
+   ]
+  },
+  {
+   "article_id": "wx_d46c11af735f",
+   "label": "广发智汇卡",
+   "url": "https://mp.weixin.qq.com/s/aFkxvnAY-NhWdolWqfVLRg",
+   "expected_topic": "广发智汇卡焕新AI算力升级",
+   "actual_title": "广发智汇卡焕新登场｜拥抱AI，算力升级！",
+   "key_facts": 4,
+   "key_facts_total": 4,
+   "topic_matched": true,
+   "title_consistency_score": 1.0,
+   "title_consistency_level": "high",
+   "quality_total": 0.947,
+   "quality_level": "A",
+   "evidence_coverage": 0.857,
+   "extraction_status": "SUCCESS",
+   "ocr_confidence": 0.9,
+   "key_fact_details": [
+    {
+     "fact": "自选商户消费2倍积分（购物/餐饮/旅游三选一）",
+     "hit": true,
+     "tokens": [
+      "2倍"
+     ]
+    },
+    {
+     "fact": "分期高至8倍积分（尊享白8倍/普卡白金5倍）",
+     "hit": true,
+     "tokens": [
+      "8倍",
+      "5倍"
+     ]
+    },
+    {
+     "fact": "每月消费一笔满18元，高至99%积分抵扣兑AI商品",
+     "hit": true,
+     "tokens": [
+      "18元",
+      "99%"
+     ]
+    },
+    {
+     "fact": "智能数码商品高至24期免息分期",
+     "hit": true,
+     "tokens": [
+      "24期"
+     ]
+    }
+   ]
+  },
+  {
+   "article_id": "wx_4c1878f858f9",
+   "label": "长安银行文旅",
+   "url": "https://mp.weixin.qq.com/s/S2evuxyWcqCLeM397WP1YQ",
+   "expected_topic": "景区秒杀与20元折扣券每周三开抢",
+   "actual_title": "重磅预告丨双重文旅福利来袭！景区秒杀/20元折扣券每周三开抢",
+   "key_facts": 3,
+   "key_facts_total": 3,
+   "topic_matched": true,
+   "title_consistency_score": 1.0,
+   "title_consistency_level": "high",
+   "quality_total": 0.99,
+   "quality_level": "A",
+   "evidence_coverage": 1.0,
+   "extraction_status": "SUCCESS",
+   "ocr_confidence": 0.9,
+   "key_fact_details": [
+    {
+     "fact": "活动时间2026年7月29日-9月30日",
+     "hit": true,
+     "tokens": [
+      "2026年7月29日",
+      "7月29日",
+      "9月30日",
+      "2026年7月29日-9月30日"
+     ]
+    },
+    {
+     "fact": "每周三10:00景区门票秒杀（故宫/大熊猫基地20元起）",
+     "hit": true,
+     "tokens": [
+      "20元"
+     ]
+    },
+    {
+     "fact": "每位客户每周限领2张20元优惠券",
+     "hit": true,
+     "tokens": [
+      "2张",
+      "20元"
+     ]
+    }
+   ]
+  },
+  {
+   "article_id": "wx_877e7eec3269",
+   "label": "北京农商夏令营",
+   "url": "https://mp.weixin.qq.com/s/rnguLseiK3Zv4k6YKr6qaQ",
+   "expected_topic": "游美青少年夏令营招募",
+   "actual_title": "游美青少年夏令营火热招募｜解锁夏日成长，限时优惠来袭！",
+   "key_facts": 1,
+   "key_facts_total": 3,
+   "topic_matched": true,
+   "title_consistency_score": 1.0,
+   "title_consistency_level": "high",
+   "quality_total": 0.99,
+   "quality_level": "A",
+   "evidence_coverage": 1.0,
+   "extraction_status": "SUCCESS",
+   "ocr_confidence": 0.9,
+   "key_fact_details": [
+    {
+     "fact": "6大爆款营地全线开抢",
+     "hit": false,
+     "tokens": []
+    },
+    {
+     "fact": "福享金分期最高立省4000元",
+     "hit": false,
+     "tokens": [
+      "4000元"
+     ]
+    },
+    {
+     "fact": "12期0息分期",
+     "hit": true,
+     "tokens": [
+      "12期"
+     ]
+    }
+   ]
+  },
+  {
+   "article_id": "wx_25ef1d2eb9bc",
+   "label": "上海银行立减",
+   "url": "https://mp.weixin.qq.com/s/8TRmp_0xp3MqEp_U9m_Oww",
+   "expected_topic": "支付立减及积分抵现双重福利",
+   "actual_title": "【速戳】用上海银行信用卡，乐享支付立减及积分抵现双重福利！",
+   "key_facts": 6,
+   "key_facts_total": 6,
+   "topic_matched": true,
+   "title_consistency_score": 1.0,
+   "title_consistency_level": "high",
+   "quality_total": 0.99,
+   "quality_level": "A",
+   "evidence_coverage": 1.0,
+   "extraction_status": "SUCCESS",
+   "ocr_confidence": 0.9,
+   "key_fact_details": [
+    {
+     "fact": "即日起至2026年9月30日",
+     "hit": true,
+     "tokens": [
+      "2026年9月30日",
+      "9月30日"
+     ]
+    },
+    {
+     "fact": "抖音随机立减1-10元",
+     "hit": true,
+     "tokens": [
+      "10元"
+     ]
+    },
+    {
+     "fact": "京东满199元随机立减1-99元",
+     "hit": true,
+     "tokens": [
+      "199元",
+      "99元"
+     ]
+    },
+    {
+     "fact": "拼多多满60元随机立减1-10元",
+     "hit": true,
+     "tokens": [
+      "60元",
+      "10元"
+     ]
+    },
+    {
+     "fact": "积分抵现100积分抵0.1元，抖音/京东单月至高抵50元",
+     "hit": true,
+     "tokens": [
+      "100积分",
+      "0.1元",
+      "50元"
+     ]
+    },
+    {
+     "fact": "公交地铁云闪付乘车码单笔至高88折",
+     "hit": true,
+     "tokens": [
+      "88折"
+     ]
+    }
+   ]
+  },
+  {
+   "article_id": "wx_a2b072f11e1d",
+   "label": "农行夏日好礼",
+   "url": "https://mp.weixin.qq.com/s/kLwq9P2wwLBRL3FV32ZnVA",
+   "expected_topic": "夏日狂欢季信用卡福利合集",
+   "actual_title": "[1条提醒] 您有一份夏日好礼待领取！",
+   "key_facts": 5,
+   "key_facts_total": 5,
+   "topic_matched": true,
+   "title_consistency_score": 1.0,
+   "title_consistency_level": "high",
+   "quality_total": 0.973,
+   "quality_level": "A",
+   "evidence_coverage": 0.944,
+   "extraction_status": "SUCCESS",
+   "ocr_confidence": 0.9,
+   "key_fact_details": [
+    {
+     "fact": "KIMI联名卡新客消费3笔每笔18元领新客礼",
+     "hit": true,
+     "tokens": [
+      "3笔",
+      "18元"
+     ]
+    },
+    {
+     "fact": "KIMI高端白金卡消费满5888元领开卡礼",
+     "hit": true,
+     "tokens": [
+      "5888元"
+     ]
+    },
+    {
+     "fact": "万事达尊然白金卡（智享AI版）消费满5888元双重开卡礼",
+     "hit": true,
+     "tokens": [
+      "5888元"
+     ]
+    },
+    {
+     "fact": "月月返现报名消费满5000元，至高300元刷卡金券",
+     "hit": true,
+     "tokens": [
+      "5000元",
+      "300元"
+     ]
+    },
+    {
+     "fact": "积分抵现1000积分抵1元，单笔至高抵20元",
+     "hit": true,
+     "tokens": [
+      "1000积分",
+      "1元",
+      "20元"
+     ]
+    }
+   ]
+  },
+  {
+   "article_id": "wx_d3be1b7c6038",
+   "label": "兴业兴运月月抽",
+   "url": "https://mp.weixin.qq.com/s/hJG9oEwSZ9l0PijUfMZlbA",
+   "expected_topic": "兴运月月抽至高88元刷卡金券包",
+   "actual_title": "兴运月月抽 | 夏日福利上线，至高赢 88 元刷卡金券包",
+   "key_facts": 3,
+   "key_facts_total": 3,
+   "topic_matched": true,
+   "title_consistency_score": 1.0,
+   "title_consistency_level": "high",
+   "quality_total": 0.99,
+   "quality_level": "A",
+   "evidence_coverage": 1.0,
+   "extraction_status": "SUCCESS",
+   "ocr_confidence": 0.9,
+   "key_fact_details": [
+    {
+     "fact": "即日起至8月31日",
+     "hit": true,
+     "tokens": [
+      "8月31日"
+     ]
+    },
+    {
+     "fact": "每月可抽一次",
+     "hit": true,
+     "tokens": []
+    },
+    {
+     "fact": "至高88元刷卡金券包，面额随机发放",
+     "hit": true,
+     "tokens": [
+      "88元"
+     ]
+    }
+   ]
+  },
+  {
+   "article_id": "wx_f75bb441b7a8",
+   "label": "中行飞汇缴费",
+   "url": "https://mp.weixin.qq.com/s/ZE-LambLp2-45jTxoJMg0g",
+   "expected_topic": "飞汇留学缴费补贴与跨境返现",
+   "actual_title": "飞汇缴费享补贴，多重优惠可叠加！",
+   "key_facts": 4,
+   "key_facts_total": 5,
+   "topic_matched": true,
+   "title_consistency_score": 1.0,
+   "title_consistency_level": "high",
+   "quality_total": 0.959,
+   "quality_level": "A",
+   "evidence_coverage": 0.897,
+   "extraction_status": "SUCCESS",
+   "ocr_confidence": 0.9,
+   "key_fact_details": [
+    {
+     "fact": "飞汇官网选择中行银联信用卡缴纳学费享补贴",
+     "hit": false,
+     "tokens": []
+    },
+    {
+     "fact": "卓隽卡笔笔返1%消费金无上限",
+     "hit": true,
+     "tokens": [
+      "1%"
+     ]
+    },
+    {
+     "fact": "留学缴费超额返6%",
+     "hit": true,
+     "tokens": [
+      "6%"
+     ]
+    },
+    {
+     "fact": "卓隽卡留学缴费超额返10%",
+     "hit": true,
+     "tokens": [
+      "10%"
+     ]
+    },
+    {
+     "fact": "境外线下消费返3%消费金",
+     "hit": true,
+     "tokens": [
+      "3%"
+     ]
+    }
+   ]
+  }
+ ],
+ "gate": {
+  "total": 8,
+  "violations": [],
+  "stats": {
+   "downstream_safe": 8,
+   "failed_state": 0,
+   "uncovered_facts_total": 0,
+   "url_duplicates": 0
+  }
+ }
+}
