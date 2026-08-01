@@ -2,7 +2,6 @@
 ## Unreleased
 
 ### Mode C：公众号文章解析落地（2026-08-01）
-
 - 新增 `common/extraction.py`：字段级 Evidence 契约、`extraction_status` 枚举、URL 规范化（canonical_url/url_hash/article_id）与 ContentBlock 规范
 - 新增 `common/wechat_fetch.py`：L1 直抓（UA/超时/重试/大小限制/协议校验）、元数据解析、正文图片化检测、按 url_hash 幂等缓存
 - 新增 `common/ocr.py`：L2 OCR（rapidocr 封装、断点续跑持久化、图片哈希去重、置信度聚合、过滤规则可配置、引擎失速保护）
@@ -15,6 +14,14 @@
 - 代码审查修复：证据字段级放行（P0-1）、下游未放行视图隔离（P0-2）、生成器 total（P1-3）、OCR 超时线程积压（P1-4）、引擎初始化锁与进度文件并发
 - 修复既有测试：`md_to_wechat.py` 活动时间字段格式统一为 `**活动时间**：`；`test_e2e` 增加 fixture 跳过假图片 URL 的真实网络下载
 - 新增 `tests/test_common/test_mode_c.py`（29 条用例）；全量测试 646 passed, 1 skipped
+
+### Mode E：活动要点提炼正则修复（2026-08-01）
+
+- 修复 `_extract_activity_essence()` 跨行匹配问题：时间正则 `[^。]*` 会跨行吞掉下一段落内容、奖励正则 `[^。]*?` 不受行边界限制，导致提炼文本以 `#` 开头被渲染成异常 `<h1>`
+- 时间提取改用日期区间短语正则（`date_full`/`date_short` + 可选"至/~"区间），只取日期本身
+- 奖励兜底正则改为 `[^。\n]{0,15}` 限制在单行内，避免跨行吞整段正文
+- 验证：异常 h1 由 2 个降为 0，主标题保持"公众号文章整理 2026-08-01"不变，`test_md_to_wechat` 3 passed
+- 跑通 Mode D → Mode E 全链：`公众号文章整理_20260801.md` → `mode_d_merged.md`（8 条去重资讯）→ 公众号粘贴版 HTML
 
 ### Mode C：银行官网公告提取优化
 

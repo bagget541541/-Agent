@@ -126,11 +126,13 @@ def _extract_activity_essence(title: str, body: str) -> str:
     """从活动内容中提取核心要素（时间、门槛、奖励）。"""
     essence = []
 
-    # 提取时间
-    time_match = re.search(r"(\d{4}年\d{1,2}月\d{1,2}日[^。]*)|(\d{1,2}月\d{1,2}日[^。]*)", body)
+    # 提取时间（只取日期区间短语本身，不跨行吞后续内容）
+    date_full = r"\d{4}[年.\-/]\d{1,2}[月.\-/]\d{1,2}日?"
+    date_short = r"\d{1,2}[月.\-/]\d{1,2}日?"
+    time_phrase = rf"(?:{date_full}|{date_short})(?:\s*[至~-]\s*(?:{date_full}|{date_short}))?"
+    time_match = re.search(time_phrase, body)
     if time_match:
-        time_str = time_match.group(0)[:30].rstrip("~")
-        essence.append(f"期间：{time_str}")
+        essence.append(f"期间：{time_match.group(0).strip()}")
 
     # 提取门槛（满XX元）
     threshold_matches = re.findall(r"满(\d+)元", body)
@@ -144,10 +146,10 @@ def _extract_activity_essence(title: str, body: str) -> str:
         rewards = sorted(set(reward_matches), key=lambda x: int(x), reverse=True)
         essence.append(f"奖励：返{rewards[0]}元")
     else:
-        # 尝试提取其他形式的奖励
-        reward_match = re.search(r"((?:满\d+)?(?:返|减|优惠|免费|赠送|券)[^。]*?)(?:。|$)", body)
+        # 尝试提取其他形式的奖励（限制单行内，避免跨行吞整段正文）
+        reward_match = re.search(r"((?:满\d+)?(?:返|减|优惠|免费|赠送|券)[^。\n]{0,15})", body)
         if reward_match:
-            reward_text = reward_match.group(1)[:20]
+            reward_text = reward_match.group(1)[:20].rstrip("：:")
             essence.append(f"奖励：{reward_text}")
 
     if essence:
