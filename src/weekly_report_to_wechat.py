@@ -280,6 +280,51 @@ def parse_structure(paras: list[dict]) -> dict:
     return {"title": title, "categories": categories, "standalone": standalone}
 
 
+def _similarity_score(s1: str, s2: str) -> float:
+    """计算两个字符串的相似度（0-1，1为完全相同）。"""
+    if s1 == s2:
+        return 1.0
+    s1_clean = re.sub(r"[\d年月日天~-]", "", s1.lower())
+    s2_clean = re.sub(r"[\d年月日天~-]", "", s2.lower())
+    if s1_clean == s2_clean:
+        return 0.95
+    common = len(set(s1_clean) & set(s2_clean))
+    total = len(set(s1_clean) | set(s2_clean))
+    return common / total if total > 0 else 0.0
+
+
+def _extract_activity_essence(title: str, body: str) -> str:
+    """从活动内容中提取核心要素（时间、门槛、奖励）。"""
+    essence = []
+
+    # 提取时间
+    time_match = re.search(r"(\d{4}年\d{1,2}月\d{1,2}日[^。]*)|(\d{1,2}月\d{1,2}日[^。]*)", body)
+    if time_match:
+        time_str = time_match.group(0)[:30].rstrip("~")
+        essence.append(f"期间：{time_str}")
+
+    # 提取门槛（满XX元）
+    threshold_matches = re.findall(r"满(\d+)元", body)
+    if threshold_matches:
+        thresholds = sorted(set(threshold_matches), key=lambda x: int(x))
+        essence.append(f"门槛：满{thresholds[0]}元起")
+
+    # 提取奖励（返XX元/积分）
+    reward_matches = re.findall(r"(?:返|优惠|满.*?(?:返|减))(\d+)(?:元|积分)", body)
+    if reward_matches:
+        rewards = sorted(set(reward_matches), key=lambda x: int(x), reverse=True)
+        essence.append(f"奖励：返{rewards[0]}元")
+    else:
+        reward_match = re.search(r"((?:满\d+)?(?:返|减|优惠|免费|赠送|券)[^。]*?)(?:。|$)", body)
+        if reward_match:
+            reward_text = reward_match.group(1)[:20]
+            essence.append(f"奖励：{reward_text}")
+
+    if essence:
+        return " | ".join(essence)
+    return ""
+
+
 def _is_garbage(text: str) -> bool:
     """检测垃圾内容（导航菜单、文件附件等）。"""
     garbage_keywords = [
@@ -602,6 +647,41 @@ def render_links_summary(all_links: list[dict]) -> str:
 
 def render_html(struct: dict, docx_path: Path) -> str:
     """主渲染入口。"""
+    # 去重处理：识别并合并相同类型的重复活动
+    for cat in struct["categories"]:
+        deduplicated = []
+        for i, item in enumerate(cat["items"]):
+            is_duplicate = False
+            for j in range(i):
+                if _similarity_score(item["title"], cat["items"][j]["title"]) > 0.8:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                deduplicated.append(item)
+        cat["items"] = deduplicated
+
+    # 内容提炼：对活动类条目提取核心要素
+    for cat in struct["categories"]:
+        if "活动" in cat["name"] or "优惠" in cat["name"]:
+            for item in cat["items"]:
+                raw_blocks = " ".join(b.get("text", b.get("body", "")) for b in item.get("blocks", []))
+                essence = _extract_activity_essence(item["title"], raw_blocks)
+                if essence:
+                    # 在亮点前添加活动要点
+                    has_highlight = any("亮点" in b.get("prefix", "") for b in item.get("blocks", []) if b.get("type") == "semantic")
+                    if has_highlight:
+                        item["_essence"] = essence
+                    else:
+                        # 添加新的语义块表示活动要点
+                        item["blocks"].insert(0, {
+                            "type": "semantic",
+                            "prefix": "📌 活动要点",
+                            "color": "#d97706",
+                            "body": essence,
+                            "is_block": False,
+                            "links": [],
+                        })
+
     # 标题从新卡+权益变更各取第一条，用-连接
     new_card_title = None
     change_title = None
