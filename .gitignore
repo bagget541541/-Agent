@@ -92,3 +92,6 @@ weekly_to_wechat.py
 # Output HTML for WeChat (generated, not tracked)
 data/*_公众号粘贴版.html
 *_公众号粘贴版.html
+
+# Local retry helpers
+scripts/launchers/retry_git_push.ps1

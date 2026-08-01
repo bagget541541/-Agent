@@ -280,8 +280,56 @@ def parse_structure(paras: list[dict]) -> dict:
     return {"title": title, "categories": categories, "standalone": standalone}
 
 
+def _is_garbage(text: str) -> bool:
+    """检测垃圾内容（导航菜单、文件附件等）。"""
+    garbage_keywords = [
+        r"^附件[：:]",
+        r"^网上银行",
+        r"^登录网上银行",
+        r"^卡片激活",
+        r"^卡片挂失",
+        r"^活动查询",
+        r"^申请信用卡",
+        r"^在线申请",
+        r"^进度查询",
+        r"^推卡活动",
+        r"^安全说明",
+        r"^站点导航",
+        r"^友情链接",
+        r"^营业网点",
+        r"^加入收藏",
+        r"^关于我们",
+        r"^人才招聘",
+        r"^地址[：:]",
+        r"^免费申请",
+        r"^下一篇",
+        r"^中信银行[·•]",
+        r"^农业银行[·•]",
+        r"^建设银行[·•]",
+        r"^[^：：]*银行.*?信用卡\s*$",
+        r"^[^：：]*[·•].*?信用卡\s*(申请|激活|详情)",
+        r"^上海市",
+        r"^浙江省",
+        r"^江苏省",
+        r"^北京市",
+        r"^（回复.{1,10}可查看详情）$",
+        r"^点击阅读原文",
+        r"^更多内容敬请关注",
+        r"^编辑：",
+        r"^来源：",
+    ]
+    for pattern in garbage_keywords:
+        if re.match(pattern, text, re.I):
+            return True
+    return False
+
+
 def _classify_normal(text: str, links: list[dict]) -> dict:
     """把 normal 段落分类成 semantic / plain / bullet-emoji 段。"""
+    # 垃圾内容过滤
+    if _is_garbage(text):
+        return {"type": "spacer"}  # 返回空的分隔符
+
     # emoji bullet：▸ • 📌 🗑 等
     if re.match(r"^[▸•📌🗑🟡🔴⚪🆕📊📈🏦]", text):
         return {"type": "bullet", "text": text}
@@ -457,28 +505,60 @@ def _render_block(b: dict, item: dict) -> str:
     return ""
 
 
+def _truncate_semantic_body(prefix: str, body: str) -> str:
+    """根据前缀类型对内容进行截断。"""
+    if not body:
+        return body
+    body = re.sub(r"\s+", " ", body).strip()
+    # 对于详情、活动内容、变更内容等较长字段，限制到2-3句话
+    if any(k in prefix for k in ["详情", "活动内容", "变更内容", "影响范围"]):
+        sentences = re.split(r'([。！？…])', body)
+        if len(sentences) > 1:
+            count = 0
+            result = []
+            for part in sentences:
+                result.append(part)
+                if part and re.search(r'[。！？…]', part):
+                    count += 1
+                    if count >= 2:
+                        return "".join(result)
+    # 其他字段的长度限制
+    max_len = 200 if any(k in prefix for k in ["详情", "活动内容"]) else 150
+    return body if len(body) <= max_len else body[:max_len].rstrip() + "…"
+
+
 def _render_semantic(b: dict) -> str:
     """渲染语义段（亮点/定位/原文链接/活动内容 等）。
 
     is_block=True 的前缀（亮点/活动内容/详情/是否值得/注意事项/变更内容）
     渲染成独立白底块；其余渲染成行内 strong + 内容。
+
+    如果 body 为空，则跳过此块。
     """
     prefix = b["prefix"]
     color = b["color"]
-    body = b["body"]
+    body = b["body"].strip() if b.get("body") else ""
     links = b.get("links", [])
     is_block = b.get("is_block", False)
+
+    # 空内容检测：如果 body 和 links 都为空，则跳过此块
+    if not body and not links:
+        return ""
 
     # 原文链接特殊处理
     if "原帖" in prefix or "原文链接" in prefix:
         # body 通常是 URL
         url = body.strip()
+        if not url:
+            return ""
         return (
             f'<div style="margin-top:6px;font-size:11px;color:#94a3b8;'
             f'word-break:break-all">{esc(prefix)} '
             f'<a href="{esc(url)}" style="color:#0ea5e9;text-decoration:none">{esc(url)}</a></div>'
         )
 
+    # 对 body 进行截断处理
+    body = _truncate_semantic_body(prefix, body)
     rendered_body = inline(body)
     # 追加 links
     for lnk in links:
@@ -522,7 +602,22 @@ def render_links_summary(all_links: list[dict]) -> str:
 
 def render_html(struct: dict, docx_path: Path) -> str:
     """主渲染入口。"""
-    title = struct["title"] or docx_path.stem
+    # 标题从新卡+权益变更各取第一条，用-连接
+    new_card_title = None
+    change_title = None
+
+    for cat in struct["categories"]:
+        cat_name = cat["name"].strip()
+        if "新卡" in cat_name and not new_card_title and cat["items"]:
+            new_card_title = cat["items"][0]["title"]
+        elif ("权益" in cat_name or "变更" in cat_name) and not change_title and cat["items"]:
+            change_title = cat["items"][0]["title"]
+
+    if new_card_title and change_title:
+        title = f"{new_card_title} - {change_title}"
+    else:
+        title = struct["title"] or docx_path.stem
+
     # 副标题：从文件名提取周次
     subtitle = docx_path.stem
 

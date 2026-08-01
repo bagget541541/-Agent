@@ -67,25 +67,111 @@ def _cells(line: str) -> list[str]:
 def _strip_heading_prefix(title: str) -> str:
     return re.sub(r"^[一二三四五六七八九十0-9]+[、.．]\s*", "", title).strip()
 
-def _truncate_text(text: str, limit: int = 120) -> str:
+def _truncate_text(text: str, limit: int = 120, sentences: int = 0) -> str:
+    """截断文本。
+
+    Args:
+        text: 输入文本
+        limit: 字符限制（默认 120）
+        sentences: 按句子数截断（0 表示按字符限制）
+    """
     text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return text
+
+    # 按句子数截断
+    if sentences > 0:
+        sentence_split = re.split(r'([。！？…，、\n])', text)
+        if len(sentence_split) > 0:
+            count = 0
+            result = []
+            for i, part in enumerate(sentence_split):
+                result.append(part)
+                if part.strip() and re.search(r'[。！？…]', part):
+                    count += 1
+                    if count >= sentences:
+                        return "".join(result)
+
+    # 按字符限制截断
     return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+def _is_garbage_line(line: str) -> bool:
+    """检测垃圾行（导航菜单、附件列表等）。"""
+    stripped = line.strip()
+    garbage_patterns = [
+        r"^附件[：:]",
+        r"^网上银行",
+        r"^登录网上银行",
+        r"^卡片激活",
+        r"^卡片挂失",
+        r"^活动查询",
+        r"^申请信用卡",
+        r"^在线申请",
+        r"^进度查询",
+        r"^推卡活动",
+        r"^安全说明",
+        r"^站点导航",
+        r"^友情链接",
+        r"^营业网点",
+        r"^加入收藏",
+        r"^关于我们",
+        r"^人才招聘",
+        r"^地址[：:]",
+        r"^免费申请$",
+        r"^下一篇",
+        r"^中[信农]银行[·•]",
+        r"^农业银行[·•]",
+        r"^建设银行[·•]",
+        r"[各银行名称].*?主题.*?信用卡$",
+        r"^[^：：]*银行.*?信用卡\s*$",
+        r"^[^：：]*[·•].*?信用卡\s*(申请|激活|详情)",
+        r"^上海市",
+        r"^浙江省",
+        r"^江苏省",
+        r"^北京市",
+        r"^（回复.{1,10}可查看详情）$",
+        r"^点击阅读原文",
+        r"^更多内容敬请关注",
+        r"^编辑：",
+        r"^来源：",
+    ]
+    for pattern in garbage_patterns:
+        if re.match(pattern, stripped, re.I):
+            return True
+    return False
+
 
 def _clean_publish_body(body: str) -> str:
     lines = body.splitlines()
     kept = []
     dropping = False
     drop_structured_fields = {"活动内容", "消息内容"}
+    skip_block = False
 
-    for line in lines:
+    for i, line in enumerate(lines):
         stripped = line.strip()
+
+        # 检测附件块开始：删除附件行及其后续缩进行
+        if _is_garbage_line(line):
+            if re.match(r"^附件[：:]", stripped):
+                skip_block = True
+            continue
+
+        # 附件块内的行（缩进或列表项）也要跳过
+        if skip_block:
+            if stripped and not re.match(r"^[\s\-\*]", line):
+                # 非缩进、非列表的行则结束附件块
+                skip_block = False
+            else:
+                continue
+
         if re.match(r"^\*\*原文摘要[：:]\*\*\s*$", stripped) and "结构化信息" in body:
             dropping = True
             continue
 
         highlight_match = re.match(r"^\*\*亮点[：:]\*\*\s*(.*)$", stripped)
         if highlight_match:
-            kept.append(f"**亮点：** {_truncate_text(highlight_match.group(1))}")
+            kept.append(f"**亮点：** {_truncate_text(highlight_match.group(1), limit=150, sentences=2)}")
             continue
 
         bullet_match = re.match(r"^-\s+\*\*([^*]+)\*\*\s*[：:]\s*(.*)$", stripped)
@@ -99,7 +185,8 @@ def _clean_publish_body(body: str) -> str:
             if field in drop_structured_fields:
                 dropping = True
                 continue
-            if field == "点评" and not value:
+            # 删除空标题内容
+            if not value:
                 continue
 
         kept.append(line)
@@ -189,14 +276,28 @@ def build_publish_markdown(md: str, title: str = "") -> tuple[str, str]:
     has_points = any(re.search(r"积分|福气值|年费|权益", i["title"] + i["body"]) for i in items)
     has_young = any(re.search(r"MBTI|DIY|贴纸|茶咖", i["title"] + i["body"], re.I) for i in items)
     if not title:
-        themes = []
-        if has_points:
-            themes.append("积分权益调整")
-        if has_ai:
-            themes.append("AI联名观察")
-        if has_young:
-            themes.append("年轻化产品")
-        title = "信用卡资讯精选｜" + "与".join(themes[:2] or ["本期重点"])
+        # 从实际条目中提取标题：新卡 + 权益变更各取第一条，用-连接
+        new_card_title = None
+        change_title = None
+        for item in items:
+            category = item.get("category", "").strip()
+            if "新卡" in category and not new_card_title:
+                new_card_title = item["title"]
+            elif ("权益" in category or "变更" in category) and not change_title:
+                change_title = item["title"]
+
+        if new_card_title and change_title:
+            title = f"{new_card_title} - {change_title}"
+        else:
+            # fallback: 根据主题生成
+            themes = []
+            if has_points:
+                themes.append("积分权益调整")
+            if has_ai:
+                themes.append("AI联名观察")
+            if has_young:
+                themes.append("年轻化产品")
+            title = "信用卡资讯精选｜" + "与".join(themes[:2] or ["本期重点"])
     summary = "本期共 **{} 条**资讯，涵盖：{}。".format(
         len(items), "、".join(f"{k}{v}条" for k, v in counts.items())
     )
