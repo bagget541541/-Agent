@@ -2,12 +2,20 @@
 # -*- coding: utf-8 -*-
 """信用卡资讯「整合点评」docx → 公众号编辑器可粘贴 HTML 片段。
 
-输入 docx 结构（每条资讯四段式）：
+支持两种输入 docx 结构，按文档实际样式自动路由（见 `_looks_like_legacy_four_part` /
+`_has_heading_hierarchy`），不依赖文件名或调用方式：
+
+1. 旧版「四段式」扁平段落（无 Word 标题层级，`来源：`/`核心内容：`/`点评：` 成组出现 ≥2 次）：
     标题行        例：农行 - 农行Visa全球支付尊享白金卡
     来源：xxx
     核心内容：xxx
     点评：xxx
-文末含「本期总结」区块和「原始链接」列表。
+   文末含「本期总结」区块和「原始链接」列表。→ `parse_structure()` + `render_html()`
+
+2. 「文档流」大纲结构（使用 Word `Heading2`/`Heading3` 样式分级，如 Heading2=机构名、
+   Heading3=活动名，可含原生表格）：只要检测到标题层级即视为此类，即使正文段落也带
+   `来源：`/`点评：` 前缀也不会被误判为四段式。→ `render_docx_flow()`，按文档顺序保留
+   标题、列表、表格与引用块，并自动生成「本期速览」统计、条目编号与分隔线。
 
 输出：单文件 HTML 片段，浏览器打开后全选复制，粘贴进公众号编辑器即可。
 """
@@ -185,7 +193,8 @@ def parse_structure(paras: list[dict]) -> dict:
             continue
         # 文章总标题：第一段非空且不含"来源/核心内容/点评/本期/原始"前缀，
         # 且不是『银行 - 卡名』格式
-        if not article_title and not t.startswith(("来源", "核心内容", "点评", "本期", "新卡", "卡组织", "年费", "原始")):
+        t_clean = _strip_leading_markers(t)
+        if not article_title and not t_clean.startswith(("来源", "核心内容", "点评", "本期", "新卡", "卡组织", "年费", "原始")):
             article_title = t
             break
 
@@ -234,18 +243,19 @@ def parse_structure(paras: list[dict]) -> dict:
             summary_lines.append(t)
             continue
 
-        # 四段式
-        if t.startswith("来源：") or t.startswith("来源:"):
+        # 四段式（处理行首前缀符号）
+        t_clean = _strip_leading_markers(t)
+        if t_clean.startswith("来源：") or t_clean.startswith("来源:"):
             if cur is not None:
-                cur["source"] = t.split("：", 1)[-1].split(":", 1)[-1].strip()
+                cur["source"] = t_clean.split("：", 1)[-1].split(":", 1)[-1].strip()
             continue
-        if t.startswith("核心内容：") or t.startswith("核心内容:"):
-            body = t.split("：", 1)[-1].split(":", 1)[-1].strip()
+        if t_clean.startswith("核心内容：") or t_clean.startswith("核心内容:"):
+            body = t_clean.split("：", 1)[-1].split(":", 1)[-1].strip()
             if cur is not None:
                 cur["core"] = body
             continue
-        if t.startswith("点评：") or t.startswith("点评:"):
-            review = t.split("：", 1)[-1].split(":", 1)[-1].strip()
+        if t_clean.startswith("点评：") or t_clean.startswith("点评:"):
+            review = t_clean.split("：", 1)[-1].split(":", 1)[-1].strip()
             if cur is not None:
                 cur["review"] = review
             continue
@@ -373,22 +383,29 @@ def render_raw_links(raw_links: list[dict]) -> str:
 def _paragraph_kind(paragraph: Paragraph, index: int) -> str:
     style = paragraph.style.name if paragraph.style is not None else ""
     text = paragraph.text.strip()
+    # index==0 恒为全文标题；其余情况下，实际标题样式（Heading1/2/3）优先于
+    # index==1 的"副标题"猜测——否则真正的层级标题（如第一个银行名恰好是第二段）
+    # 会被误判成普通副标题，丢失应有的标题渲染。
     if index == 0:
         return "title"
-    if index == 1:
-        return "subtitle"
     if style.startswith("Heading 1"):
         return "h2"
     if style.startswith("Heading 2"):
         return "h3"
     if style.startswith("Heading 3"):
         return "h4"
+    if style.startswith(("Quote", "Block")):
+        return "quote"
     if style.startswith("List"):
         return "li"
+    if index == 1:
+        return "subtitle"
     if re.fullmatch(r"[─\-—]{6,}", text):
         return "rule"
     if text.startswith(("🔴", "🟡", "⚪", "🆕")) and len(text) <= 40:
         return "badge"
+    if _strip_leading_markers(text) != text:
+        return "li"
     return "p"
 
 
@@ -424,13 +441,153 @@ def _render_table(table: Table) -> str:
     )
 
 
-def render_docx_flow(docx_path: Path, title: str = "") -> str:
-    """Render a formatted DOCX article without forcing it into the legacy four-part schema."""
+def _classify_docx_blocks(
+    document: DocxDocument,
+) -> tuple[list[tuple[Paragraph | Table, str | None]], list[bool]]:
+    """将文档拆分为 (block, kind) 序列，并标记出真正的"条目"起点（h3 级标题后
+    紧跟 h4 级子标题，与"h3 后接表格"的汇总性小节如"汇总对比"区分开）。
+    供 render_docx_flow 与自动标题挑选共用，避免两处各自维护一份分类逻辑。
+    """
+    blocks = _iter_docx_blocks(document)
+    classified: list[tuple[Paragraph | Table, str | None]] = []
+    paragraph_index = 0
+    for block in blocks:
+        if isinstance(block, Table):
+            classified.append((block, None))
+            continue
+        text = block.text.strip()
+        if not text:
+            classified.append((block, "blank"))
+            continue
+        kind = _paragraph_kind(block, paragraph_index)
+        paragraph_index += 1
+        classified.append((block, kind))
+
+    def _next_meaningful_kind(i: int) -> str | None:
+        for j in range(i + 1, len(classified)):
+            k = classified[j][1]
+            if k == "blank":
+                continue
+            return k
+        return None
+
+    entry_flags = [
+        kind == "h3" and _next_meaningful_kind(i) == "h4"
+        for i, (_block, kind) in enumerate(classified)
+    ]
+    return classified, entry_flags
+
+
+_VALUE_RANK = {"🔴": 0, "🟡": 1, "⚪": 2}
+
+
+def _short_name(name: str) -> str:
+    """去掉条目名末尾的"银行"后缀，便于在标题/速览等紧凑场景中显示。"""
+    return re.sub(r"银行$", "", name) or name
+
+
+def _collect_entries(
+    classified: list[tuple[Paragraph | Table, str | None]], entry_flags: list[bool]
+) -> list[dict]:
+    """从已分类的段落序列中提取每条"条目"的名称、点评价值等级与卖点短语。
+
+    价值等级来自点评行开头的 🔴/🟡/⚪ 标记（`_VALUE_RANK`，未标注为 3=最低）；
+    卖点短语取点评正文中去掉"高价值 —"等等级描述前缀后的第一个短句（截断至 14
+    字）。供自动标题挑选（`_auto_pick_title`）与本期速览摘要（`_build_overview_html`）
+    共用，只有一份提取逻辑。
+    """
+    entries: list[dict] = []
+    current: dict | None = None
+    for i, (block, kind) in enumerate(classified):
+        if entry_flags[i]:
+            if current:
+                entries.append(current)
+            current = {"name": block.text.strip(), "essence": "", "rank": 3}
+            continue
+        if current is None or kind not in {"p", "li"}:
+            continue
+        text = _strip_leading_markers(block.text.strip())
+        if not text.startswith(("点评：", "点评:")):
+            continue
+        body = text.split("：", 1)[-1].split(":", 1)[-1].strip()
+        for marker, rank in _VALUE_RANK.items():
+            if body.startswith(marker):
+                current["rank"] = min(current["rank"], rank)
+                body = body[len(marker):].strip()
+                break
+        # 去掉"高价值 —"/"中等 —"等价值等级描述前缀，保留后面的实际卖点短语
+        body = re.sub(r"^[^—\-，,。：:]{0,8}[—\-]\s*", "", body)
+        # 括号也作为断句点，避免截断时切在括注内部产生未闭合的括号
+        essence = re.split(r"[，,。：:（(]", body, maxsplit=1)[0].strip()
+        if len(essence) > 14:
+            essence = essence[:14] + "…"
+        if essence:
+            current["essence"] = essence
+    if current:
+        entries.append(current)
+    return entries
+
+
+def _auto_pick_title(docx_path: Path) -> str:
+    """按各条目点评中的价值标记（🔴高价值 优先于 🟡中等 优先于 ⚪其他）自动挑选
+    价值最高的两条条目，提炼卖点精简为整体标题（如"信用卡资讯精选｜A×B"）。
+
+    仅依赖文档结构（条目起点 + 其点评行的价值 emoji），不针对任何具体银行/活动
+    名称，故对任何后续周报都适用。同价值等级并列时按文档原始出现顺序取前两个。
+    未标注价值等级的条目、或全文可比较条目不足两条时返回空串，由调用方回退到
+    默认标题逻辑（用户仍可通过 --title 显式指定标题覆盖此结果）。
+    """
     document = Document(docx_path)
+    classified, entry_flags = _classify_docx_blocks(document)
+    entries = _collect_entries(classified, entry_flags)
+
+    ranked = sorted(
+        (e for e in entries if e["rank"] < 3 and e["essence"]), key=lambda e: e["rank"]
+    )
+    if len(ranked) < 2:
+        return ""
+
+    picks = [f"{_short_name(e['name'])}{e['essence']}" for e in ranked[:2]]
+    return "信用卡资讯精选｜" + "×".join(picks)
+
+
+def _build_overview_html(entries: list[dict], total_entries: int) -> str:
+    """生成「本期速览」摘要：除条目总数外，点出🔴高价值条目及其卖点、🟡中等条目
+    数量，让读者一眼看到本期看点，引导继续往下读；无价值标注时退化为纯计数句。
+    """
+    high = [e for e in entries if e["rank"] == 0 and e["essence"]]
+    mid = [e for e in entries if e["rank"] == 1]
+
+    text = f'本期共 <strong>{total_entries}</strong> 条资讯'
+    if high:
+        shown = high[:3]
+        names = "、".join(f"{_short_name(e['name'])}（{e['essence']}）" for e in shown)
+        if len(high) > len(shown):
+            names += " 等"
+        text += f'，其中 <strong>{len(high)}</strong> 条 🔴高价值不容错过：{names}'
+        if mid:
+            text += f'；另有 <strong>{len(mid)}</strong> 条 🟡中等力度可按需参考'
+    text += "。"
+
+    return (
+        '<div style="margin:0 0 24px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;'
+        'border-radius:6px;color:#1e3a8a;font-size:13px;line-height:1.8">'
+        f'<strong style="color:#1e40af">本期速览</strong>　{text}</div>'
+    )
+
+
+def render_docx_flow(docx_path: Path, title: str = "") -> str:
+    """按文档实际结构（标题层级、原生表格）渲染，不强行套用四段式解析。"""
+    document = Document(docx_path)
+    classified, entry_flags = _classify_docx_blocks(document)
+    total_entries = sum(entry_flags)
+    overview_html = _build_overview_html(_collect_entries(classified, entry_flags), total_entries)
+
     out: list[str] = []
     list_items: list[str] = []
-    paragraph_index = 0
     in_review = False
+    entry_no = 0
+    overview_inserted = False
 
     def flush_list() -> None:
         if list_items:
@@ -439,8 +596,11 @@ def render_docx_flow(docx_path: Path, title: str = "") -> str:
             )
             list_items.clear()
 
-    for block in _iter_docx_blocks(document):
-        if isinstance(block, Table):
+    for i, (block, kind) in enumerate(classified):
+        if kind == "blank":
+            flush_list()
+            continue
+        if kind is None:  # 表格
             flush_list()
             table_html = _render_table(block)
             if table_html:
@@ -448,17 +608,45 @@ def render_docx_flow(docx_path: Path, title: str = "") -> str:
             continue
 
         text = block.text.strip()
-        if not text:
-            flush_list()
-            continue
-        kind = _paragraph_kind(block, paragraph_index)
-        paragraph_index += 1
+
+        # 本期速览：紧跟在标题（及可能的副标题）之后、第一条正文之前插入一次。
+        if not overview_inserted and kind not in {"title", "subtitle"} and total_entries > 0:
+            out.append(overview_html)
+            overview_inserted = True
 
         if kind != "li":
             flush_list()
         if kind in {"h2", "h3", "h4", "title", "subtitle", "rule"}:
             in_review = False
         color = color_for(text)
+
+        # 语义化处理：来源/核心内容/点评（可能带项目符号或 emoji 前缀，如'• 💬 点评：'）
+        clean_text = _strip_leading_markers(text) if kind in {"p", "li"} else text
+        if kind in {"p", "li"} and clean_text.startswith(("来源：", "来源:")):
+            flush_list()
+            body = clean_text.split("：", 1)[-1].split(":", 1)[-1].strip()
+            out.append(f'<p style="margin:2px 0;color:#94a3b8;font-size:12px">来源：{inline(body)}</p>')
+            continue
+        if kind in {"p", "li"} and clean_text.startswith(("点评：", "点评:")):
+            flush_list()
+            body = clean_text.split("：", 1)[-1].split(":", 1)[-1].strip()
+            out.append(
+                f'<blockquote style="margin:10px 0 0;padding:10px 14px;border-left:4px solid {color};'
+                f'background:#f8fafc;color:#334155;font-size:13px;line-height:1.85">'
+                f'<strong style="color:{color}">点评：</strong>{inline(body)}</blockquote>'
+            )
+            continue
+        if kind in {"p", "li"} and clean_text.startswith(("核心内容：", "核心内容:")):
+            body = clean_text.split("：", 1)[-1].split(":", 1)[-1].strip()
+            if not body:
+                # 仅有标签、无正文：正文以紧随其后的要点列表形式呈现，跳过空标签行
+                continue
+            flush_list()
+            out.append(
+                f'<p style="margin:8px 0 4px;color:#334155;font-size:14px;line-height:1.85;text-align:justify">'
+                f'<strong style="color:#0f172a">核心内容：</strong>{inline(body)}</p>'
+            )
+            continue
 
         if kind == "title":
             out.append(f'<h1 style="font-size:24px;line-height:1.4;color:#0f172a;margin:6px 0 8px;font-weight:700">{inline(title or text)}</h1>')
@@ -469,14 +657,22 @@ def render_docx_flow(docx_path: Path, title: str = "") -> str:
         elif kind == "h2":
             out.append(f'<div style="margin:26px 0 12px;padding:9px 12px;border-left:4px solid {color};background:#f8fafc"><h2 style="font-size:18px;line-height:1.5;color:#0f172a;margin:0;font-weight:700">{inline(text)}</h2></div>')
         elif kind == "h3":
-            out.append(f'<h3 style="font-size:17px;line-height:1.5;color:{color};margin:22px 0 8px;font-weight:700">{inline(text)}</h3>')
+            if entry_flags[i]:
+                entry_no += 1
+                if entry_no > 1:
+                    out.append('<div style="height:1px;background:#e5e7eb;margin:24px 0"></div>')
+                out.append(f'<h3 style="font-size:17px;line-height:1.5;color:{color};margin:24px 0 6px;font-weight:700">{entry_no}. {inline(text)}</h3>')
+            else:
+                out.append(f'<h3 style="font-size:17px;line-height:1.5;color:{color};margin:22px 0 8px;font-weight:700">{inline(text)}</h3>')
         elif kind == "h4":
             in_review = text == "专业点评"
-            out.append(f'<h4 style="font-size:15px;line-height:1.5;color:{color};margin:18px 0 8px;font-weight:700">{inline(text)}</h4>')
+            out.append(f'<h4 style="font-size:15px;line-height:1.5;color:{color};margin:4px 0 8px;font-weight:700">{inline(text)}</h4>')
         elif kind == "li":
-            list_items.append(f'<li style="margin:4px 0;line-height:1.75">{inline(text)}</li>')
+            list_items.append(f'<li style="margin:4px 0;line-height:1.75">{inline(clean_text)}</li>')
         elif kind == "badge":
             out.append(f'<p style="display:inline-block;margin:0 0 10px;padding:2px 8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:999px;color:#475569;font-size:12px;line-height:1.6">{inline(text)}</p>')
+        elif kind == "quote":
+            out.append(f'<p style="margin:20px 0 0;color:#94a3b8;font-size:12px;line-height:1.6">{inline(text)}</p>')
         elif in_review:
             out.append(f'<blockquote style="margin:10px 0;padding:10px 14px;border-left:4px solid {color};background:#f8fafc;color:#334155;font-size:13px;line-height:1.85;text-align:justify">{inline(text)}</blockquote>')
         else:
@@ -490,10 +686,50 @@ def render_docx_flow(docx_path: Path, title: str = "") -> str:
     )
 
 
+_MARKER_CHARS = "•◦◆▪▫‣∙\\-\\*"
+_EMOJI_RANGE = "\U0001F000-\U0001FFFF⌀-⏿☀-➿⬀-⯿"
+_LEADING_MARKER_RE = re.compile(rf"^(?:[{_MARKER_CHARS}]|[{_EMOJI_RANGE}]️?)\s*")
+
+
+def _strip_leading_markers(text: str) -> str:
+    """移除行首的常见前缀符号（列表符号 • ◦ ▪ 等，以及 emoji 图标），支持多层叠加（如'• 💬 点评：'）。"""
+    text = text.lstrip()
+    while True:
+        m = _LEADING_MARKER_RE.match(text)
+        if not m:
+            return text
+        text = text[m.end():]
+
+
+def _has_heading_hierarchy(paras: list[dict]) -> bool:
+    """检测文档是否使用了 Word 标题样式（Heading2/Heading3）组织结构。
+
+    真正的'四段式'文档是扁平的纯文本段落（标题行+来源+核心内容+点评，无标题层级）；
+    若文档使用了标题样式分级（如'银行名'为 Heading2、'活动名'为 Heading3），
+    说明它是层级大纲结构，不能套用四段式的『非来源/核心内容/点评行=新条目』切分逻辑，
+    否则会把每一条子要点都错误拆分成独立条目。
+    """
+    return any(p.get("style", "").startswith(("Heading2", "Heading3")) for p in paras)
+
+
 def _looks_like_legacy_four_part(paras: list[dict]) -> bool:
-    source_count = sum(1 for p in paras if p["text"].strip().startswith(("来源：", "来源:")))
-    core_count = sum(1 for p in paras if p["text"].strip().startswith(("核心内容：", "核心内容:")))
-    review_count = sum(1 for p in paras if p["text"].strip().startswith(("点评：", "点评:")))
+    """检测是否为'四段式'格式（标题-来源-核心内容-点评，扁平段落，无标题层级）"""
+    if _has_heading_hierarchy(paras):
+        return False
+
+    source_count = 0
+    core_count = 0
+    review_count = 0
+
+    for p in paras:
+        text = _strip_leading_markers(p["text"].strip())
+        if text.startswith(("来源：", "来源:")):
+            source_count += 1
+        elif text.startswith(("核心内容：", "核心内容:")):
+            core_count += 1
+        elif text.startswith(("点评：", "点评:")):
+            review_count += 1
+
     return min(source_count, core_count, review_count) >= 2
 
 def render_html(struct: dict, title: str = "") -> str:
@@ -535,8 +771,8 @@ def convert(docx_path: Path, output: Path | None = None, title: str = "") -> tup
         fragment = render_html(struct, final_title)
     else:
         first_text = next((p["text"].strip() for p in paras if p["text"].strip()), "")
-        final_title = title or first_text or "信用卡资讯整合点评"
-        fragment = render_docx_flow(docx_path, title)
+        final_title = title or _auto_pick_title(docx_path) or first_text or "信用卡资讯整合点评"
+        fragment = render_docx_flow(docx_path, final_title)
     out = output or docx_path.with_name(docx_path.stem + "_公众号粘贴版.html")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(fragment, encoding="utf-8")
@@ -546,7 +782,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="docx 整合点评 → 公众号可粘贴 HTML")
     ap.add_argument("docx", help="输入 docx 文件")
     ap.add_argument("--output", default="", help="输出 HTML 路径")
-    ap.add_argument("--title", default="", help="发布标题；不填自动生成")
+    ap.add_argument(
+        "--title", default="",
+        help="发布标题；不填时按各条目点评的价值等级（🔴优先于🟡）自动挑选最高两条精简生成",
+    )
     args = ap.parse_args()
     source = Path(args.docx)
     if not source.is_file():

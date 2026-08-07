@@ -1,6 +1,17 @@
 # 修订记录
 ## Unreleased
 
+### Mode F：docx→公众号 HTML 格式误判修复（2026-08-07）
+
+- 根因：`_looks_like_legacy_four_part()` 仅按文本前缀（`来源：`/`核心内容：`/`点评：`）判断格式，未感知 Word 标题样式层级；`公众号文章整理_20260807.md.docx` 采用 Heading2（机构名）/Heading3（活动名）大纲结构，但正文段落恰好也带 `来源：`/`点评：` 前缀，导致被误判为四段式，经旧版 `parse_structure()` 拆成 118 条假资讯，「汇总对比」表格被摧毁，「本期速览」概览区块丢失
+- 修复为结构性判定而非内容判定：新增 `_has_heading_hierarchy()`，只要文档含 `Heading2`/`Heading3` 样式即直接判定非四段式（不看文本前缀），从根本上排除"正文碰巧带相同前缀词"的误判可能，对任何未来周报文档同样生效，不针对本文件内容
+- `_strip_leading_markers()` 泛化为正则驱动，支持任意 bullet 符号（•◦▪▫‣∙-\*）与整个 emoji Unicode 区间的组合叠加剥离，不依赖硬编码的符号白名单
+- 修复 `_paragraph_kind()` 中 `index==1` 恒判为副标题的优先级 bug（应先判断实际 Word 样式，样式不存在时才退化为按序号猜测）
+- 重写 `render_docx_flow()`：基于「Heading2 后紧跟 Heading3」的结构模式动态统计条目数并生成「本期速览」，为条目自动编号并在条目间插入分隔线，`来源：`/`核心内容：`/`点评：` 前缀段落识别为语义块单独渲染，与四段式路径共用前缀识别逻辑但互不影响
+- 验证：`公众号文章整理_20260807.md.docx` 重新生成后正确识别为 6 条资讯，表格/概览/编号/分色点评均恢复，且未影响旧四段式素材的既有回归用例
+- 新增自动标题挑选 `_auto_pick_title()`：不传 `--title` 时，按各条目点评首个价值 emoji（🔴高价值 优先于 🟡中等 优先于 ⚪其他）取全文排名最高的两条，提炼点评首个卖点短语精简为「信用卡资讯精选｜A×B」式标题；同价值等级并列按文档原始出现顺序取前两个；纯依赖文档结构与点评标注，不针对具体银行/活动名称；未标注价值等级或可比条目不足两条时返回空串，回退到旧的"取全文首段文字"兜底逻辑；`--title` 显式传参始终优先。抽取 `_classify_docx_blocks()` 供 `render_docx_flow()` 与该函数共用，避免重复维护分类逻辑
+- 回归：`tests/test_docx_to_wechat.py` 2 passed
+
 ### Mode C：公众号文章解析落地（2026-08-01）
 - 新增 `common/extraction.py`：字段级 Evidence 契约、`extraction_status` 枚举、URL 规范化（canonical_url/url_hash/article_id）与 ContentBlock 规范
 - 新增 `common/wechat_fetch.py`：L1 直抓（UA/超时/重试/大小限制/协议校验）、元数据解析、正文图片化检测、按 url_hash 幂等缓存
