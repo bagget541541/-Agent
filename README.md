@@ -351,7 +351,7 @@ python docx_to_wechat.py "data/samples/公众号文章整合点评_0714+0717.md.
 
 **Mode F: 周报 docx → 公众号 HTML**
 
-针对"信用卡周报"Word docx（Word 原生段落样式 `Title` / `Heading1` / `Heading2` / `ListBullet` / `normal`），转成公众号编辑器可粘贴的 HTML 片段。样式骨架参考 `D:\ckl\个人\bat\flyertrss\_site\公众号粘贴版_*.html`：
+针对信用卡周报及「合并点评稿」Word docx，转成公众号编辑器可粘贴的 HTML 片段。常规周报使用 `Title` / `Heading1` / `Heading2` / `ListBullet` / `normal`；合并点评稿使用 `Heading 1=总标题`、`Heading 2=机构`、`Heading 3=资讯`，并可含 Word 原生表格。样式骨架参考 `D:\ckl\个人\bat\flyertrss\_site\公众号粘贴版_*.html`：
 
 ```bash
 python weekly_report_to_wechat.py "data/Weekly_Report_2026年7月第3周.docx" \
@@ -359,12 +359,13 @@ python weekly_report_to_wechat.py "data/Weekly_Report_2026年7月第3周.docx" \
 ```
 
 解析与渲染：
-- **段落样式识别**：`Title` → 主标题；`Heading1` → 一级分类（带 emoji 前缀 🆕⚠️🎁📢💡）；`Heading2` → 二级条目（剥 `N.` 编号前缀，⚪🟡🔴 优先级配色）；`ListBullet` → `<ul>`；`normal` → 语义段或普通段落。
-- **总览条**：`📊 周报概览` + 统计各类别条目数（新卡资讯 2 条 · 优惠活动 6 条 · …）。
+- **结构识别**：常规周报按 `Heading1=分类` / `Heading2=条目` 解析；合并点评稿按 `Heading 1=总标题` / `Heading 2=机构` / `Heading 3=资讯` 解析，避免将汇总表和推荐区误作资讯卡。
+- **总览条**：`📊 周报概览` 统计实际资讯数与各类别条目数，并列出 🔴 高价值资讯数量及机构。
 - **条目卡片**：圆角 `border-radius:8px` + 左侧 4px 色条 + 银行标签（含 `BANK_KEYWORDS` 银行名识别与配色）+ 条目标题 + 亮点块（白底 + 浅灰边框）。
+- **原生表格与推荐**：保留 DOCX 原生表格为独立横向滚动区；「本期重点推荐」独立成区，不计入资讯数量。
 - **过滤详细内容**：`SKIP_DETAIL_PREFIXES` 集合干掉活动内容/详情/变更内容/时间/影响范围/适用人群/年费回报评估/注意事项/核心理由/卡种/来源等长正文。
 - **原帖链接汇总区**：纯连续序号 1-N，从各条目的"原文链接："语义段和段落 URL 里收集，URL 去重。
-- **AI 声明 + 互动 CTA**：`background:#fff7ed` 声明 + `background:#0f172a` CTA 收尾。
+- **发布页尾**：链接及推荐区之后独立输出「整理时间」和 Coze AI 使用声明。
 
 **Mode E: 公众号发布 HTML**
 - 默认读取 data/mode_d_merged.md

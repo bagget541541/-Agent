@@ -20,10 +20,16 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import re
 import sys
 import zipfile
+from datetime import date
 from pathlib import Path
+
+from docx import Document
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 
 # 兜底：确保项目根（src 的父目录）在 sys.path 中，避免从其他 CWD 运行时
 # `from src.docx_to_wechat import ...` 因找不到 src package 而失败
@@ -33,6 +39,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 # 复用 docx_to_wechat 的基础能力
 from src.docx_to_wechat import parse_docx, _read_rels, esc, inline
+from common.llm_client import LlmClient, _load_apikey_txt_configs
 
 
 # ── 银行识别 + 标签配色 ──────────────────────────────────────────────
@@ -280,6 +287,160 @@ def parse_structure(paras: list[dict]) -> dict:
     return {"title": title, "categories": categories, "standalone": standalone}
 
 
+def _heading_level(paragraph: Paragraph) -> int | None:
+    """Return a Word heading level while accepting English and Chinese styles."""
+    name = paragraph.style.name or ""
+    match = re.search(r"(?:Heading|标题)\s*(\d+)", name, re.I)
+    if match:
+        return int(match.group(1))
+    style_id = paragraph.style.style_id or ""
+    match = re.fullmatch(r"Heading([1-9])|([1-9])", style_id, re.I)
+    if match:
+        return int(match.group(1) or match.group(2))
+    return None
+
+
+def _iter_top_level_blocks(document: Document):
+    """Yield paragraphs and tables in document order without flattening table cells."""
+    from docx.oxml.table import CT_Tbl
+    from docx.oxml.text.paragraph import CT_P
+
+    for child in document.element.body.iterchildren():
+        if isinstance(child, CT_P):
+            yield Paragraph(child, document)
+        elif isinstance(child, CT_Tbl):
+            yield Table(child, document)
+
+
+def _priority_from_blocks(blocks: list[dict]) -> tuple[str, str]:
+    text = " ".join(
+        block.get("text", block.get("body", "")) for block in blocks
+    )
+    if "🔴" in text:
+        return "#dc2626", "高价值"
+    if "🟡" in text:
+        return "#d97706", "中等"
+    return "#64748b", "常规"
+
+
+def _outline_category(item: dict) -> str:
+    """Classify merged-article entries into reader-facing categories."""
+    text = " ".join(
+        [item["title"]]
+        + [block.get("text", block.get("body", "")) for block in item["blocks"]]
+    )
+    if re.search(r"停发|退市|调整|变更|公告|到期|终止", text):
+        return "重要提醒"
+    if re.search(r"新卡|首发|发行|卡种|Visa.*信用卡|信用卡.*Visa", text, re.I):
+        return "新卡与权益"
+    if re.search(r"权益|年费|里程|积分", text):
+        return "权益变更"
+    return "优惠活动"
+
+
+def _table_rows(table: Table) -> list[list[str]]:
+    return [[cell.text.strip() for cell in row.cells] for row in table.rows]
+
+
+def _parse_outline_structure(docx_path: Path) -> dict | None:
+    """Parse merged commentary documents: H1 title, H2 institution, H3 article.
+
+    This structure differs from the legacy weekly-report schema (H1 category,
+    H2 item). Keeping it separate prevents summaries and native tables from
+    being turned into faux article cards.
+    """
+    document = Document(docx_path)
+    blocks = list(_iter_top_level_blocks(document))
+    levels = [
+        _heading_level(block)
+        for block in blocks
+        if isinstance(block, Paragraph) and block.text.strip()
+    ]
+    if not ({1, 2, 3} <= set(level for level in levels if level is not None)):
+        return None
+
+    title = ""
+    bank = ""
+    current: dict | None = None
+    entries: list[dict] = []
+    summary_title = ""
+    summary_rows: list[list[str]] = []
+    recommendations: list[str] = []
+    section = ""
+
+    def flush_entry() -> None:
+        nonlocal current
+        if current is None:
+            return
+        color, priority = _priority_from_blocks(current["blocks"])
+        current["priority_color"] = color
+        current["priority"] = priority
+        entries.append(current)
+        current = None
+
+    for block in blocks:
+        if isinstance(block, Table):
+            flush_entry()
+            if section == "summary":
+                summary_rows = _table_rows(block)
+            continue
+
+        text = block.text.strip()
+        if not text:
+            continue
+        level = _heading_level(block)
+        if level == 1:
+            title = text
+            section = ""
+            continue
+        if level == 2:
+            flush_entry()
+            if "汇总对比" in text:
+                summary_title = text
+                section = "summary"
+            elif "重点推荐" in text or "本期推荐" in text:
+                section = "recommendations"
+            else:
+                bank = text
+                section = "article"
+            continue
+        if level == 3 and bank and section == "article":
+            flush_entry()
+            current = {
+                "title": f"{bank}｜{text}",
+                "raw": text,
+                "blocks": [],
+                "links": [],
+            }
+            continue
+        if section == "recommendations":
+            recommendations.append(text)
+        elif current is not None:
+            current["blocks"].append(_classify_normal(text, []))
+
+    flush_entry()
+    if not entries:
+        return None
+
+    category_order = ("优惠活动", "新卡与权益", "权益变更", "重要提醒")
+    grouped: dict[str, list[dict]] = {name: [] for name in category_order}
+    for item in entries:
+        grouped[_outline_category(item)].append(item)
+    categories = [
+        {"name": name, "raw": name, "color": _h1_color(name), "emoji": _h1_emoji(name), "items": items}
+        for name, items in grouped.items()
+        if items
+    ]
+    return {
+        "title": title or docx_path.stem,
+        "categories": categories,
+        "standalone": [],
+        "outline": True,
+        "summary_table": {"title": summary_title, "rows": summary_rows} if summary_rows else None,
+        "recommendations": recommendations,
+    }
+
+
 def _similarity_score(s1: str, s2: str) -> float:
     """计算两个字符串的相似度（0-1，1为完全相同）。"""
     if s1 == s2:
@@ -323,6 +484,81 @@ def _extract_activity_essence(title: str, body: str) -> str:
     if essence:
         return " | ".join(essence)
     return ""
+
+
+def _llm_json(text: str) -> dict | None:
+    """Parse a JSON object from a model response, including fenced JSON."""
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
+    try:
+        value = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        match = re.search(r"\{.*\}", text, flags=re.S)
+        if not match:
+            return None
+        try:
+            value = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def _llm_facts_are_grounded(value: dict, source: str) -> bool:
+    """Reject summaries that introduce numeric facts absent from the source."""
+    source_digits = set(re.findall(r"\d+(?:\.\d+)?", source))
+    output = " ".join(str(value.get(k, "")) for k in ("summary", "action"))
+    return all(token in source_digits for token in re.findall(r"\d+(?:\.\d+)?", output))
+
+
+def _mode_e_enrich(struct: dict) -> None:
+    """Add constrained reader-facing summaries; failures keep the rule output."""
+    configs = _load_apikey_txt_configs()
+    clients = [LlmClient(api_key=c["api_key"], api_base=c["api_base"], model=c.get("model") or None) for c in configs]
+    if not clients:
+        clients = [LlmClient(config_source="file")]
+    active_index = 0
+    system = (
+        "你是信用卡周报编辑。只能依据用户提供的原文工作，禁止补充原文没有的日期、金额、门槛、名额、银行或链接。"
+        "输出严格 JSON，不要 Markdown：{\"summary\":\"一句话说明核心变化\","
+        "\"action\":\"一句话说明持卡人下一步\",\"importance\":\"high|medium|low\"}。"
+        "若信息不完整，明确写‘原文未明确’，不要猜测。每个字段分别不超过80字。"
+    )
+    total = 0
+    enriched = 0
+    for cat in struct.get("categories", []):
+        for item in cat.get("items", []):
+            total += 1
+            source = " ".join(
+                [item.get("title", ""), item.get("raw", "")] +
+                [b.get("text", b.get("body", "")) for b in item.get("blocks", [])]
+            )
+            if not source.strip():
+                continue
+            response = None
+            for offset in range(len(clients)):
+                index = (active_index + offset) % len(clients)
+                candidate = clients[index].call(system, f"分类：{cat.get('name', '')}\n原文：{source[:5000]}", temperature=0.1, max_tokens=220, timeout=30)
+                if candidate:
+                    response = candidate
+                    active_index = index
+                    break
+            value = _llm_json(response.content) if response else None
+            if not value or not value.get("summary") or not value.get("action"):
+                continue
+            if not _llm_facts_are_grounded(value, source):
+                print(f"  [Mode E] 跳过未通过事实回查：{item.get('title', '')[:40]}", flush=True)
+                continue
+            importance = str(value.get("importance", "medium")).lower()
+            if importance not in {"high", "medium", "low"}:
+                importance = "medium"
+            item["_mode_e"] = {
+                "summary": str(value["summary"]).strip()[:160],
+                "action": str(value["action"]).strip()[:160],
+                "importance": importance,
+            }
+            enriched += 1
+    print(f"  [Mode E] LLM 摘要写入 {enriched}/{total} 条", flush=True)
 
 
 def _is_garbage(text: str) -> bool:
@@ -492,6 +728,20 @@ def render_item_card(item: dict, cat: dict) -> str:
         f'line-height:1.4;margin-top:2px">{inline(item["title"])}</div>'
     )
 
+    mode_e = item.get("_mode_e")
+    if mode_e:
+        importance_label = {"high": "优先关注", "medium": "值得留意", "low": "常规信息"}[mode_e["importance"]]
+        parts.append(
+            f'<p style="font-size:12px;color:#475569;margin:7px 0 4px;line-height:1.65">'
+            f'<span style="color:#2563eb;font-weight:700">🧭 读者要点：</span>{inline(mode_e["summary"])}'
+            f'</p>'
+        )
+        parts.append(
+            f'<p style="font-size:12px;color:#475569;margin:4px 0;line-height:1.65">'
+            f'<span style="color:#0f766e;font-weight:700">✅ {importance_label}：</span>{inline(mode_e["action"])}'
+            f'</p>'
+        )
+
     # blocks 渲染
     for b in item["blocks"]:
         parts.append(_render_block(b, item))
@@ -655,7 +905,60 @@ def render_links_summary(all_links: list[dict]) -> str:
     )
 
 
-def render_html(struct: dict, docx_path: Path) -> str:
+def render_summary_table(summary: dict | None) -> str:
+    """Render a native DOCX summary table as a standalone, scrollable section."""
+    if not summary or not summary.get("rows"):
+        return ""
+    rows = summary["rows"]
+    header = rows[0]
+    head_html = "".join(
+        f'<th style="padding:8px 7px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;'
+        f'font-size:12px;color:#334155;text-align:left;white-space:nowrap">{inline(cell)}</th>'
+        for cell in header
+    )
+    body_html = "".join(
+        "<tr>" + "".join(
+            f'<td style="padding:8px 7px;border-bottom:1px solid #e5e7eb;font-size:12px;'
+            f'line-height:1.6;vertical-align:top;color:#475569">{inline(cell)}</td>'
+            for cell in row
+        ) + "</tr>"
+        for row in rows[1:]
+    )
+    return (
+        f'<div style="margin:24px 0 0"><p style="font-size:15px;font-weight:600;color:#333;'
+        f'margin:0 0 10px;padding-left:10px;border-left:3px solid #6366f1">{inline(summary["title"])}</p>'
+        f'<div style="overflow-x:auto;border:1px solid #e2e8f0"><table style="min-width:720px;width:100%;'
+        f'border-collapse:collapse"><thead><tr>{head_html}</tr></thead><tbody>{body_html}</tbody></table></div></div>'
+    )
+
+
+def render_recommendations(recommendations: list[str]) -> str:
+    if not recommendations:
+        return ""
+    rows = "".join(
+        f'<p style="font-size:13px;color:#334155;margin:6px 0;line-height:1.7">{inline(item)}</p>'
+        for item in recommendations
+    )
+    return (
+        '<div style="margin-top:24px;padding:14px 16px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px">'
+        '<p style="font-size:15px;font-weight:600;color:#92400e;margin:0 0 8px">本期重点推荐</p>'
+        f'{rows}</div>'
+    )
+
+
+def render_footer(generated_on: date) -> str:
+    """Keep publication metadata outside recommendation or article cards."""
+    date_text = f"{generated_on.year}年{generated_on.month}月{generated_on.day}日"
+    return (
+        '<div style="margin-top:24px;padding-top:14px;border-top:1px solid #e5e7eb">'
+        f'<p style="font-size:12px;color:#94a3b8;margin:0 0 6px">整理时间：{date_text}</p>'
+        '<p style="font-size:12px;color:#94a3b8;margin:0;line-height:1.6">'
+        '本内容由 Coze AI 生成，请遵循相关法律法规及《人工智能生成合成内容标识办法》使用与传播。'
+        '</p></div>'
+    )
+
+
+def render_html(struct: dict, docx_path: Path, mode: str = "rule") -> str:
     """主渲染入口。"""
     # 去重处理：识别并合并相同类型的重复活动
     for cat in struct["categories"]:
@@ -692,6 +995,9 @@ def render_html(struct: dict, docx_path: Path) -> str:
                             "links": [],
                         })
 
+    if mode == "e":
+        _mode_e_enrich(struct)
+
     # 标题从新卡+权益变更各取第一条，用-连接
     new_card_title = None
     change_title = None
@@ -703,13 +1009,17 @@ def render_html(struct: dict, docx_path: Path) -> str:
         elif ("权益" in cat_name or "变更" in cat_name) and not change_title and cat["items"]:
             change_title = cat["items"][0]["title"]
 
-    if new_card_title and change_title:
+    if mode == "e":
+        week_match = re.search(r"(\d{4}年\d{1,2}月第\d+周)", docx_path.stem)
+        week_label = week_match.group(1) if week_match else "本周"
+        title = f"信用卡周报｜{week_label}"
+        subtitle = "停发、协议更新与高性价比活动：本周持卡人最该关注的资讯"
+    elif not struct.get("outline") and new_card_title and change_title:
         title = f"{new_card_title} - {change_title}"
+        subtitle = docx_path.stem
     else:
         title = struct["title"] or docx_path.stem
-
-    # 副标题：从文件名提取周次
-    subtitle = docx_path.stem
+        subtitle = docx_path.stem
 
     # 收集所有条目的链接，供文末汇总
     all_links: list[dict] = []
@@ -734,6 +1044,13 @@ def render_html(struct: dict, docx_path: Path) -> str:
             f'📊 <strong>周报概览</strong> — {esc(subtitle)} · '
             f'本期共 <strong>{total_items}</strong> 条 · {stats_html}'
         )
+        high_value = [
+            item for cat in struct["categories"] for item in cat["items"]
+            if item.get("priority") == "高价值"
+        ]
+        if high_value:
+            names = "、".join(item["title"].split("｜", 1)[0] for item in high_value[:3])
+            overview += f' · 🔴高价值 <strong>{len(high_value)}</strong> 条：{inline(names)}'
     else:
         overview = f"📊 <strong>周报概览</strong> — {esc(subtitle)} · 信用卡周报"
     body_parts.append(render_overview_bar(overview))
@@ -764,17 +1081,21 @@ def render_html(struct: dict, docx_path: Path) -> str:
 
     # 文末链接汇总
     body_parts.append(render_links_summary(all_links))
+    body_parts.append(render_summary_table(struct.get("summary_table")))
+    body_parts.append(render_recommendations(struct.get("recommendations", [])))
+    body_parts.append(render_footer(date.today()))
 
     body = "".join(body_parts)
     return render_shell(body)
 
 
-def convert(docx_path: Path, output: Path | None = None) -> Path:
+def convert(docx_path: Path, output: Path | None = None, mode: str = "rule") -> Path:
     # 复用 docx_to_wechat.parse_docx()：一次解 zip + XML，返回带 style/links/has_img 的段落
-    paras = parse_docx(docx_path)
-
-    struct = parse_structure(paras)
-    fragment = render_html(struct, docx_path)
+    struct = _parse_outline_structure(docx_path)
+    if struct is None:
+        paras = parse_docx(docx_path)
+        struct = parse_structure(paras)
+    fragment = render_html(struct, docx_path, mode=mode)
 
     out = output or docx_path.with_name(docx_path.stem + "_公众号粘贴版.html")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -786,12 +1107,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="信用卡周报 Word docx → 公众号可粘贴 HTML")
     ap.add_argument("docx", help="输入 docx 文件")
     ap.add_argument("--output", default="", help="输出 HTML 路径")
+    ap.add_argument("--mode", choices=("rule", "e"), default="rule", help="rule=规则提炼；e=规则提炼后使用 LLM 生成受约束摘要")
     args = ap.parse_args()
     source = Path(args.docx)
     if not source.is_file():
         ap.error(f"文件不存在：{source}")
     out = Path(args.output) if args.output else None
-    result = convert(source, out)
+    result = convert(source, out, mode=args.mode)
     print(f"[OK] 公众号粘贴 HTML -> {result}")
     print("操作：浏览器打开 HTML 后全选复制，粘贴到公众号编辑器。")
     return 0
