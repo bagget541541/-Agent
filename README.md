@@ -367,6 +367,20 @@ python weekly_report_to_wechat.py "data/Weekly_Report_2026年7月第3周.docx" \
 - **原帖链接汇总区**：纯连续序号 1-N，从各条目的"原文链接："语义段和段落 URL 里收集，URL 去重。
 - **发布页尾**：链接及推荐区之后独立输出「整理时间」和 Coze AI 使用声明。
 
+**Mode F 的 `--mode e` 受约束摘要**
+
+在规则提炼基础上，为每条资讯增加「读者要点」和「持卡人下一步」：
+
+```bash
+python weekly_report_to_wechat.py "data/Weekly_Report_2026年7月第3周.docx" \
+    --mode e \
+    --output "data/Weekly_Report_2026年7月第3周_公众号粘贴版.html"
+```
+
+- 仅依据该条资讯原文生成摘要与行动建议；日期、金额、门槛等数字必须能在原文中回查。
+- 模型输出格式或事实回查不通过时，跳过该条摘要，保留规则模式的原有输出。
+- `apikey.txt` 支持以空行分隔多个兼容 API 通道，按顺序故障切换；未提供模型名时，对已知中转地址使用默认模型。
+
 **Mode E: 公众号发布 HTML**
 - 默认读取 data/mode_d_merged.md
 - 默认输出 data/mode_d_merged_公众号粘贴版.html

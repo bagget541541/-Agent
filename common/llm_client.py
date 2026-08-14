@@ -105,36 +105,47 @@ def _find_project_root(start: Optional[str] = None) -> Optional[str]:
     return None
 
 
-def _load_apikey_txt_config() -> Optional[dict]:
-    """从项目根目录 apikey.txt 读取配置。
+def _load_apikey_txt_configs() -> list[dict]:
+    """读取 apikey.txt 中按空行分隔的多个兼容 API 通道。
 
-    兼容两行格式：
-    1. api_key
-    2. api_base
+    每个配置块至少包含一行 API Key 和一行 HTTP(S) 地址；两者顺序不限。
     """
     root = _find_project_root()
     if not root:
-        return None
+        return []
 
     path = os.path.join(root, "apikey.txt")
     if not os.path.isfile(path):
-        return None
+        return []
 
     try:
         with open(path, "r", encoding="utf-8") as f:
-            lines = [line.strip() for line in f if line.strip()]
+            raw = f.read()
     except Exception:
-        return None
+        return []
 
-    if not lines:
-        return None
+    configs: list[dict] = []
+    # Known relay defaults when apikey.txt does not include a model line.
+    host_models = {"api.qnaigc.com": "qwen-turbo"}
+    blocks = re.split(r"(?:\r?\n){2,}", raw.strip())
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        api_base = next((line for line in lines if re.match(r"^https?://", line, re.I)), "")
+        api_key = next((line for line in lines if line != api_base and not re.match(r"^https?://", line, re.I)), "")
+        if api_key and api_base:
+            host = re.sub(r"^https?://", "", api_base, flags=re.I).split("/", 1)[0].lower()
+            configs.append({
+                "api_key": api_key,
+                "api_base": api_base.rstrip("/"),
+                "model": os.environ.get("LLM_MODEL", "") or host_models.get(host, ""),
+            })
+    return configs
 
-    api_key = lines[0]
-    api_base = lines[1] if len(lines) >= 2 else ""
-    model = os.environ.get("LLM_MODEL", "")
-    if not api_key:
-        return None
-    return {"api_key": api_key, "api_base": api_base, "model": model}
+
+def _load_apikey_txt_config() -> Optional[dict]:
+    """向后兼容：返回 apikey.txt 中的第一个有效通道。"""
+    configs = _load_apikey_txt_configs()
+    return configs[0] if configs else None
 
 
 # ── .env 加载（简化版，零外部依赖） ─────────────────
