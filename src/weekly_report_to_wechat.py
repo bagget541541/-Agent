@@ -313,13 +313,37 @@ def _iter_top_level_blocks(document: Document):
 
 
 def _priority_from_blocks(blocks: list[dict]) -> tuple[str, str]:
-    text = " ".join(
-        block.get("text", block.get("body", "")) for block in blocks
-    )
-    if "🔴" in text:
-        return "#dc2626", "高价值"
-    if "🟡" in text:
-        return "#d97706", "中等"
+    """从条目的 blocks 里判定价值等级。
+
+    合并点评版文档的价值标注在"点评："行开头（如"点评：🔴高价值 — ..."）。
+    只扫描 blocks 里以"点评"开头的文本，取其首个 emoji 作为价值等级；
+    找不到点评行时返回"常规"——不再用"拼所有 blocks 文本搜 emoji"的
+    旧逻辑，因为旧逻辑会把散落在子活动正文里的 🔴/🟡 误判为整体价值。
+
+    返回 (priority_color, priority_label)。
+    """
+    for block in blocks:
+        text = block.get("text", block.get("body", ""))
+        # 去掉列表符号 + 点评 emoji 前缀（• ◦ ▪ 💬 等）再匹配"点评"
+        stripped = re.sub(r"^[•◦▪▸‣∙💬\s]+", "", text).strip()
+        if not stripped.startswith(("点评", "点评：", "点评:")):
+            continue
+        # 点评行开头可能是"🔴高价值"或"🟡中等"等
+        for emoji, color in PRIORITY_COLORS.items():
+            if emoji in stripped[:6]:  # 只看前 6 字（emoji+等级词）
+                return color, {"🔴": "高价值", "🟡": "中等", "⚪": "常规"}.get(emoji, "常规")
+        # 找到点评行但无 emoji，视为常规
+        return "#64748b", "常规"
+    # 没有点评整行：扫 semantic 块里"🔴/🟡/⚪ + 等级词 —"开头的小节点评
+    for block in blocks:
+        text = block.get("text", block.get("body", ""))
+        # 形如"🔴高价值 — ..."或"🟡中等 — ..."
+        m = re.match(r"^\s*[•◦▪▸‣∙💬\s]*([🔴🟡⚪])\s*(高价值|中等|套路|常规)", text)
+        if m:
+            emoji = m.group(1)
+            color = PRIORITY_COLORS[emoji]
+            return color, {"🔴": "高价值", "🟡": "中等", "⚪": "常规"}.get(emoji, "常规")
+    # 没有点评行，回退常规
     return "#64748b", "常规"
 
 
@@ -439,6 +463,155 @@ def _parse_outline_structure(docx_path: Path) -> dict | None:
         "summary_table": {"title": summary_title, "rows": summary_rows} if summary_rows else None,
         "recommendations": recommendations,
     }
+
+
+# ── 价值提炼标题 ──────────────────────────────────────────────────────
+# 价值等级排序：高价值(0) > 中等(1) > 常规(2)
+_PRIORITY_RANK = {"高价值": 0, "中等": 1, "常规": 2}
+
+# 利益词：含这些词的"活动卖点"短句最适合做标题
+_BENEFIT_WORDS = (
+    "返现", "立减", "免手", "免年费", "免货币", "换", "送", "赠", "加赠",
+    "积分", "里程", "门票", "满减", "折扣", "立减", "随机减", "达标",
+)
+# 抽象评价/元描述词：这类短句不是活动卖点，应跳过
+_ABSTRACT_WORDS = (
+    "本质", "聊胜", "门槛不高", "门槛适中", "门槛极低", "波动大",
+    "性价比", "实用性", "刚需", "顺手", "意义不大", "价值不低",
+    "名列前茅", "硬权益", "硬核", "套路", "实打实",
+)
+# 负面/限制性词：含这些词的短句是风险提示而非卖点，应跳过
+_NEGATIVE_WORDS = (
+    "不透明", "需抢", "聊胜", "波动大", "意义不大", "套路", "秒不到",
+    "别抱", "波动", "限制", "不免", "不可", "除外", "注意",
+)
+
+
+def _smart_truncate_title(text: str, limit: int = 22) -> str:
+    """把卖点短语软截断到 limit 字内，在标点处收尾，不留裸省略号。
+
+    规则：
+    1. 已短于 limit：原样返回。
+    2. 在 limit 字内找最后一个标点（含顿号），从那里截断。
+    3. 找不到合适标点时，在 limit+4 字内找最近标点。
+    4. 实在没标点，硬截断到 limit 字。
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    cut = max(head.rfind("，"), head.rfind(","), head.rfind("。"),
+              head.rfind("；"), head.rfind(";"), head.rfind("、"))
+    if cut >= limit // 2:
+        return head[:cut]
+    window = text[:limit + 4]
+    cut2 = max(window.rfind("，"), window.rfind("、"), window.rfind("；"),
+               window.rfind(";"), window.rfind("。"))
+    if cut2 >= limit // 2:
+        return window[:cut2]
+    return head
+
+
+def _pick_essence_segment(body: str) -> str:
+    """从点评正文里挑出最适合做标题的"活动卖点"短句。
+
+    评分优先级（从高到低）：
+    1. 含数字 + 利益词，且不含负面词/抽象评价词 —— 最具象、最吸引人
+    2. 含利益词但无数字的短句
+    3. 含数字但无利益词的短句
+    4. 第一个非抽象、非负面短句（兜底）
+
+    短句按 [，,。：:（(；;] 切分。返回空串表示无可提取卖点。
+    """
+    segs = [s.strip() for s in re.split(r"[，,。：:（(；;]", body) if s.strip()]
+    if not segs:
+        return ""
+
+    def score(s: str) -> tuple[int, int, int]:
+        has_num = 1 if re.search(r"\d", s) else 0
+        has_benefit = 1 if any(w in s for w in _BENEFIT_WORDS) else 0
+        is_abstract = 1 if any(w in s for w in _ABSTRACT_WORDS) else 0
+        is_negative = 1 if any(w in s for w in _NEGATIVE_WORDS) else 0
+        if is_negative or is_abstract:
+            return (-1, -1, -1)
+        return (has_benefit + has_num, has_benefit, has_num)
+
+    best = max(segs, key=score)
+    if score(best)[0] < 0:
+        return ""
+    return best
+
+
+def _build_value_title(struct: dict) -> str | None:
+    """从合并点评版文档的条目里，提炼价值最高的两条卖点生成标题。
+
+    标题结构：`信用卡资讯精选｜浦发5万消费换国际机票｜上海笔笔2%返现`
+    - 优先取 🔴高价值 条目，同等级按文档原始顺序取前两条。
+    - 卖点保留"机构+活动名"格式：从 item["title"]（"机构｜活动名"）取
+      机构前缀 + 活动名后半段，机构名用 `_short_name` 去掉"银行"后缀。
+    - 卖点用 `_smart_truncate_title` 软截断到 22 字内，在标点处收尾，
+      不留裸省略号。
+    - 多条并列时用"｜"分隔，避免"×"这种像乱码的连接符。
+
+    返回标题字符串，或 None 表示无可用条目（调用方回退到默认标题）。
+    """
+    # 收集所有条目，扁平化为 (priority, item) 列表
+    all_items: list[tuple[str, dict]] = []
+    for cat in struct["categories"]:
+        for item in cat["items"]:
+            pri = item.get("priority", "常规")
+            all_items.append((pri, item))
+
+    if not all_items:
+        return None
+
+    # 按价值等级排序（rank 小的优先）
+    all_items.sort(key=lambda x: _PRIORITY_RANK.get(x[0], 3))
+
+    picks: list[str] = []
+    seen_orgs: set[str] = set()  # 避免同一机构重复出现
+    for pri, item in all_items:
+        if len(picks) >= 2:
+            break
+        # 活动名：从 "机构｜活动名" 里取后半段；机构名取前半段
+        title_full = item.get("title", "")
+        org = ""
+        activity = ""
+        if "｜" in title_full:
+            org, activity = title_full.split("｜", 1)
+            org = org.strip()
+            activity = activity.strip()
+        else:
+            activity = title_full.strip()
+
+        # 同一机构只取一条（避免浦发🔴+浦发🟡都进标题）
+        org_key = org or activity
+        if org_key in seen_orgs:
+            continue
+        seen_orgs.add(org_key)
+
+        # 卖点：activity 优先，缺失时从 blocks 里找点评正文提取 essence
+        sell = activity
+        if not sell:
+            for b in item.get("blocks", []):
+                body = b.get("text", b.get("body", ""))
+                essence = _pick_essence_segment(body)
+                if essence:
+                    sell = essence
+                    break
+
+        if not sell:
+            continue
+
+        # 保留机构名前缀，机构名去掉"银行"后缀更紧凑
+        org_short = re.sub(r"银行$", "", org) if org else ""
+        sell = _smart_truncate_title(sell)
+        picks.append(f"{org_short}{sell}")
+
+    if not picks:
+        return None
+
+    return "信用卡资讯精选｜" + "｜".join(picks)
 
 
 def _similarity_score(s1: str, s2: str) -> float:
@@ -1018,7 +1191,9 @@ def render_html(struct: dict, docx_path: Path, mode: str = "rule") -> str:
         title = f"{new_card_title} - {change_title}"
         subtitle = docx_path.stem
     else:
-        title = struct["title"] or docx_path.stem
+        # 合并点评版（outline）文档：优先用价值提炼标题
+        value_title = _build_value_title(struct) if struct.get("outline") else None
+        title = value_title or struct["title"] or docx_path.stem
         subtitle = docx_path.stem
 
     # 收集所有条目的链接，供文末汇总

@@ -74,14 +74,41 @@ def _strip_tags(s: str) -> str:
     return re.sub(r"<[^>]+>", "", s)
 
 
+def _read_style_map(zf: zipfile.ZipFile) -> dict[str, str]:
+    """styleId -> 显示名（如 '21' -> 'Heading 2'）。
+
+    word/styles.xml 里每个 <w:style w:styleId="X"> 都带一个 <w:name w:val="..."/>。
+    我们只关心标题/列表/引用这类语义样式，返回 id->name 映射供 parse_docx 归一化。
+    """
+    try:
+        xml = zf.read("word/styles.xml").decode("utf-8", errors="replace")
+    except KeyError:
+        return {}
+    out: dict[str, str] = {}
+    for m in re.finditer(r'<w:style\b[^>]*>', xml):
+        tag = m.group(0)
+        sid_m = re.search(r'w:styleId="([^"]+)"', tag)
+        if not sid_m:
+            continue
+        # 该 style 元素的完整块，取其 <w:name w:val="..."/>
+        block = xml[m.start():xml.find("</w:style>", m.start())]
+        name_m = re.search(r'<w:name\s+w:val="([^"]+)"', block)
+        if sid_m and name_m:
+            out[sid_m.group(1)] = name_m.group(1)
+    return out
+
+
 def parse_docx(path: Path) -> list[dict]:
     """返回段落列表，每段含 text / links / style / has_img。
 
     其中 style 与 has_img 为可选字段（早期调用方仅用 text 与 links）。
+    style 字段为样式显示名（如 'Heading 2'），已通过 styles.xml 把内部
+    styleId（如 '21'）归一化，便于上层用 startswith("Heading") 等判断。
     """
     with zipfile.ZipFile(path) as zf:
         xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
         rel_map = _read_rels(zf)
+        style_map = _read_style_map(zf)
 
     # 切成 <w:p ...> ... </w:p> 段
     paras_xml = re.findall(r"<w:p\b[^>]*>.*?</w:p>", xml, re.S)
@@ -89,7 +116,11 @@ def parse_docx(path: Path) -> list[dict]:
     for pxml in paras_xml:
         # 段落样式（Title / Heading1 / Heading2 / ListBullet / normal）
         style_m = re.search(r'<w:pStyle w:val="([^"]+)"', pxml)
-        style = style_m.group(1) if style_m else "normal"
+        if style_m:
+            # 优先用 styles.xml 映射成显示名；映射缺失时回退到原始 id
+            style = style_map.get(style_m.group(1), style_m.group(1))
+        else:
+            style = "normal"
 
         # 段内 hyperlink：可能带 r:id 指向外部 URL
         links: list[dict] = []
@@ -486,14 +517,100 @@ def _short_name(name: str) -> str:
     return re.sub(r"银行$", "", name) or name
 
 
+def _smart_truncate(text: str, limit: int = 22) -> str:
+    """把卖点短语软截断到 limit 字内，尽量在标点/词边界处收尾。
+
+    规则：
+    1. 已短于 limit：原样返回。
+    2. 在 limit 字内找最后一个标点（含顿号"，、；;"），从那里截断。截断点
+       跳过该标点本身——这样"等值5万消费换上海-巴黎往返、积分加赠"会保留
+       前一个完整短句"等值5万消费换上海-巴黎往返"，而不是带着顿号尾巴。
+    3. 找不到合适标点时硬切到 limit 字并加"…"。
+
+    不再加裸"…"：调用方需要省略号时自行追加；标题里直接用截断后的短句即可。
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    # 优先在标点处断句
+    head = text[:limit]
+    cut = max(head.rfind("，"), head.rfind(","), head.rfind("。"),
+              head.rfind("；"), head.rfind(";"), head.rfind("、"))
+    if cut >= limit // 2:
+        return head[:cut]
+    # 回退：在 limit 附近找最近标点（稍超 limit 也可接受，换得完整短句）
+    window = text[:limit + 4]
+    cut2 = max(window.rfind("，"), window.rfind("、"), window.rfind("；"),
+               window.rfind(";"), window.rfind("。"))
+    if cut2 >= limit // 2:
+        return window[:cut2]
+    # 实在没标点，硬截断
+    return head
+
+
+_BENEFIT_WORDS = (
+    "返现", "立减", "免手", "免年费", "免货币", "换", "送", "赠", "加赠",
+    "积分", "里程", "门票", "满减", "折扣", "立减", "随机减", "达标",
+)
+# 抽象评价/元描述词：这类短句不是活动卖点，essence 提取时应跳过
+_ABSTRACT_WORDS = (
+    "本质", "聊胜", "门槛不高", "门槛适中", "门槛极低", "波动大",
+    "性价比", "实用性", "刚需", "顺手", "意义不大", "价值不低",
+    "名列前茅", "硬权益", "硬核", "套路", "实打实",
+)
+# 负面/限制性词：含这些词的短句是风险提示而非卖点，应跳过
+_NEGATIVE_WORDS = (
+    "不透明", "需抢", "聊胜", "波动大", "意义不大", "套路", "秒不到",
+    "别抱", "波动", "限制", "不免", "不可", "除外", "注意",
+)
+
+
+def _pick_essence_segment(body: str) -> str:
+    """从点评正文里挑出最适合做标题的"活动卖点"短句。
+
+    评分优先级（从高到低）：
+    1. 含数字 + 利益词，且不含负面词/抽象评价词 —— 最具象、最吸引人
+    2. 含利益词但无数字的短句
+    3. 含数字但无利益词的短句
+    4. 第一个非抽象、非负面短句（兜底）
+
+    短句按 [，,。：:（(；;] 切分。返回空串表示无可提取卖点。
+    """
+    segs = [s.strip() for s in re.split(r"[，,。：:（(；;]", body) if s.strip()]
+    if not segs:
+        return ""
+
+    def score(s: str) -> tuple[int, int, int]:
+        has_num = 1 if re.search(r"\d", s) else 0
+        has_benefit = 1 if any(w in s for w in _BENEFIT_WORDS) else 0
+        is_abstract = 1 if any(w in s for w in _ABSTRACT_WORDS) else 0
+        is_negative = 1 if any(w in s for w in _NEGATIVE_WORDS) else 0
+        # 负面/抽象评价强降权
+        if is_negative or is_abstract:
+            return (-1, -1, -1)
+        return (has_benefit + has_num, has_benefit, has_num)
+
+    best = max(segs, key=score)
+    # 如果最高分都是负的（全是负面/抽象短句），返回空串让调用方回退
+    if score(best)[0] < 0:
+        return ""
+    return best
+
+
 def _collect_entries(
     classified: list[tuple[Paragraph | Table, str | None]], entry_flags: list[bool]
 ) -> list[dict]:
-    """从已分类的段落序列中提取每条"条目"的名称、点评价值等级与卖点短语。
+    """从已分类的段落序列中提取每条"条目"的名称、活动名、价值等级与卖点短语。
 
-    价值等级来自点评行开头的 🔴/🟡/⚪ 标记（`_VALUE_RANK`，未标注为 3=最低）；
-    卖点短语取点评正文中去掉"高价值 —"等等级描述前缀后的第一个短句（截断至 14
-    字）。供自动标题挑选（`_auto_pick_title`）与本期速览摘要（`_build_overview_html`）
+    每条 entry 的字段：
+    - `name`: 机构名（entry h3 标题文本，如"浦发银行"）。
+    - `activity`: 活动名（紧随 entry 之后的第一个 h4 标题文本，如"等值5万
+      消费换上海-巴黎往返"）。这是标题里最具吸引力的"活动卖点"。
+    - `rank`: 点评行的价值等级（🔴0 > 🟡1 > ⚪2，未标注为 3）。
+    - `essence`: 从点评正文用 `_pick_essence_segment` 提取的卖点短句，作为
+      activity 的补充；activity 优先用于标题生成。
+
+    供自动标题挑选（`_auto_pick_title`）与本期速览摘要（`_build_overview_html`）
     共用，只有一份提取逻辑。
     """
     entries: list[dict] = []
@@ -502,9 +619,20 @@ def _collect_entries(
         if entry_flags[i]:
             if current:
                 entries.append(current)
-            current = {"name": block.text.strip(), "essence": "", "rank": 3}
+            current = {
+                "name": block.text.strip(),
+                "activity": "",
+                "essence": "",
+                "rank": 3,
+            }
             continue
-        if current is None or kind not in {"p", "li"}:
+        if current is None:
+            continue
+        # 紧随 entry h3 之后的第一个 h4 = 活动名
+        if kind == "h4" and not current["activity"]:
+            current["activity"] = block.text.strip()
+            continue
+        if kind not in {"p", "li"}:
             continue
         text = _strip_leading_markers(block.text.strip())
         if not text.startswith(("点评：", "点评:")):
@@ -517,12 +645,9 @@ def _collect_entries(
                 break
         # 去掉"高价值 —"/"中等 —"等价值等级描述前缀，保留后面的实际卖点短语
         body = re.sub(r"^[^—\-，,。：:]{0,8}[—\-]\s*", "", body)
-        # 括号也作为断句点，避免截断时切在括注内部产生未闭合的括号
-        essence = re.split(r"[，,。：:（(]", body, maxsplit=1)[0].strip()
-        if len(essence) > 14:
-            essence = essence[:14] + "…"
+        essence = _pick_essence_segment(body)
         if essence:
-            current["essence"] = essence
+            current["essence"] = _smart_truncate(essence)
     if current:
         entries.append(current)
     return entries
@@ -530,25 +655,50 @@ def _collect_entries(
 
 def _auto_pick_title(docx_path: Path) -> str:
     """按各条目点评中的价值标记（🔴高价值 优先于 🟡中等 优先于 ⚪其他）自动挑选
-    价值最高的两条条目，提炼卖点精简为整体标题（如"信用卡资讯精选｜A×B"）。
+    价值最高的条目，提炼卖点生成有吸引力的整体标题。
 
-    仅依赖文档结构（条目起点 + 其点评行的价值 emoji），不针对任何具体银行/活动
-    名称，故对任何后续周报都适用。同价值等级并列时按文档原始出现顺序取前两个。
-    未标注价值等级的条目、或全文可比较条目不足两条时返回空串，由调用方回退到
-    默认标题逻辑（用户仍可通过 --title 显式指定标题覆盖此结果）。
+    标题结构：`信用卡资讯精选｜浦发5万消费换国际机票｜上海笔笔2%返现`
+    - 机构名用 `_short_name` 去掉"银行"后缀，紧凑显示。
+    - 卖点优先取活动名（h4 标题，如"等值5万消费换上海-巴黎往返"），
+      activity 缺失时回退到 essence（点评正文提取的短句）。
+    - 卖点用 `_smart_truncate` 软截断到 22 字内，在标点处收尾，不留裸省略号。
+    - 多条并列时用"｜"分隔，避免"×"这种像乱码的连接符。
+    - 价值等级排序：🔴(0) > 🟡(1) > ⚪(2) > 未标注(3)；同等级按文档原始顺序。
+    - 仅依赖文档结构（条目起点 + 点评行价值 emoji），不针对具体银行/活动名称，
+      故对任何后续周报都适用。
+
+    未标注价值等级的条目、或可比较条目不足两条时返回空串，由调用方回退到默认
+    标题逻辑（用户仍可通过 --title 显式指定标题覆盖此结果）。
     """
     document = Document(docx_path)
     classified, entry_flags = _classify_docx_blocks(document)
     entries = _collect_entries(classified, entry_flags)
 
+    # 卖点字段：activity 优先，缺失回退 essence
+    def headline(e: dict) -> str:
+        return e["activity"] or e["essence"]
+
+    # 只保留有卖点的条目，按价值等级排序（rank 小的优先）
     ranked = sorted(
-        (e for e in entries if e["rank"] < 3 and e["essence"]), key=lambda e: e["rank"]
+        (e for e in entries if headline(e)),
+        key=lambda e: e["rank"],
     )
-    if len(ranked) < 2:
+    # 过滤掉未标注价值等级的条目（rank==3），除非它们是仅有的条目
+    valued = [e for e in ranked if e["rank"] < 3]
+    picks_pool = valued if len(valued) >= 2 else ranked
+
+    if len(picks_pool) < 2:
         return ""
 
-    picks = [f"{_short_name(e['name'])}{e['essence']}" for e in ranked[:2]]
-    return "信用卡资讯精选｜" + "×".join(picks)
+    # 取前两条，生成"机构+卖点"的紧凑片段
+    picks = []
+    for e in picks_pool[:2]:
+        org = _short_name(e["name"])
+        # activity（h4 标题）可能很长，截断到 22 字内
+        sell = _smart_truncate(headline(e), 22).rstrip("…")
+        picks.append(f"{org}{sell}")
+
+    return "信用卡资讯精选｜" + "｜".join(picks)
 
 
 def _build_overview_html(entries: list[dict], total_entries: int) -> str:
@@ -702,14 +852,26 @@ def _strip_leading_markers(text: str) -> str:
 
 
 def _has_heading_hierarchy(paras: list[dict]) -> bool:
-    """检测文档是否使用了 Word 标题样式（Heading2/Heading3）组织结构。
+    """检测文档是否使用了 Word 标题样式（Heading 1/2/3）组织结构。
 
     真正的'四段式'文档是扁平的纯文本段落（标题行+来源+核心内容+点评，无标题层级）；
-    若文档使用了标题样式分级（如'银行名'为 Heading2、'活动名'为 Heading3），
+    若文档使用了标题样式分级（如'银行名'为 Heading 2、'活动名'为 Heading 3），
     说明它是层级大纲结构，不能套用四段式的『非来源/核心内容/点评行=新条目』切分逻辑，
     否则会把每一条子要点都错误拆分成独立条目。
+
+    parse_docx 已通过 styles.xml 把内部 styleId（如 '21'）归一化成显示名
+    （如 'Heading 2'，注意有空格）。但不同 docx 生成器大小写不一致（Word 用
+    'Heading 1'，某些 Markdown→docx 工具用 'heading 1'），这里统一小写匹配，
+    覆盖 'Heading 1'/'heading 1'/'Heading1' 等变体。
     """
-    return any(p.get("style", "").startswith(("Heading2", "Heading3")) for p in paras)
+    heading_prefixes = (
+        "heading 1", "heading 2", "heading 3", "heading 4",
+        "heading1", "heading2", "heading3", "heading4",
+    )
+    return any(
+        p.get("style", "").lower().startswith(heading_prefixes)
+        for p in paras
+    )
 
 
 def _looks_like_legacy_four_part(paras: list[dict]) -> bool:

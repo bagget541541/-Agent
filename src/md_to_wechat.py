@@ -11,6 +11,8 @@ import mimetypes
 import re
 from pathlib import Path
 
+from common.llm_client import LlmClient, _load_apikey_txt_configs
+
 COLORS = {"权益": "#2563eb", "积分": "#7c3aed", "AI": "#0891b2", "活动": "#d97706", "年轻": "#db2777", "行动": "#0f766e"}
 DROP_HEADINGS = {"行动建议", "来源清单", "编辑声明", "本稿声明"}
 
@@ -155,6 +157,66 @@ def _extract_activity_essence(title: str, body: str) -> str:
     if essence:
         return " | ".join(essence)
     return ""
+
+
+def _parse_llm_json(text: str) -> dict | None:
+    text = (text or "").strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
+    try:
+        value = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        match = re.search(r"\{.*\}", text, flags=re.S)
+        if not match:
+            return None
+        try:
+            value = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def _grounded_summary(value: dict, source: str) -> bool:
+    source_digits = set(re.findall(r"\d+(?:\.\d+)?", source))
+    output = " ".join(str(value.get(k, "")) for k in ("summary", "action"))
+    return all(token in source_digits for token in re.findall(r"\d+(?:\.\d+)?", output))
+
+
+def _mode_e_enrich_items(items: list[dict]) -> None:
+    """Use LLM only for reader-facing copy; retain source facts and URLs."""
+    configs = _load_apikey_txt_configs()
+    clients = [LlmClient(api_key=c["api_key"], api_base=c["api_base"], model=c.get("model") or None) for c in configs]
+    if not clients:
+        clients = [LlmClient(config_source="file")]
+    active_index = 0
+    system = (
+        "你是信用卡周报编辑，只能依据原文。禁止补充原文没有的日期、金额、门槛、名额、银行或链接。"
+        "严格输出 JSON：{\"summary\":\"核心变化\",\"action\":\"持卡人下一步\",\"importance\":\"high|medium|low\"}。"
+        "信息缺失写‘原文未明确’，不要猜测；每个字段不超过80字。"
+    )
+    enriched = 0
+    for item in items:
+        source = f"分类：{item.get('category','')}\n标题：{item.get('title','')}\n原文：{item.get('body','')}"
+        response = None
+        for offset in range(len(clients)):
+            index = (active_index + offset) % len(clients)
+            candidate = clients[index].call(system, source[:5000], temperature=0.1, max_tokens=220, timeout=30)
+            if candidate:
+                response = candidate
+                active_index = index
+                break
+        value = _parse_llm_json(response.content) if response else None
+        if not value or not value.get("summary") or not value.get("action") or not _grounded_summary(value, source):
+            continue
+        importance = str(value.get("importance", "medium")).lower()
+        if importance not in {"high", "medium", "low"}:
+            importance = "medium"
+        item["body"] = (
+            f"**🧭 读者要点：** {str(value['summary']).strip()[:160]}\n\n"
+            f"**✅ {'优先关注' if importance == 'high' else '值得留意' if importance == 'medium' else '常规信息'}：** "
+            f"{str(value['action']).strip()[:160]}\n\n{item['body']}"
+        )
+        enriched += 1
+    print(f"  [Mode E] LLM 摘要写入 {enriched}/{len(items)} 条", flush=True)
 
 
 def _extract_activity_time(body: str) -> str:
@@ -416,7 +478,7 @@ def _extract_publish_items(md: str) -> list[dict]:
     return items
 
 
-def build_publish_markdown(md: str, title: str = "") -> tuple[str, str]:
+def build_publish_markdown(md: str, title: str = "", mode: str = "rule") -> tuple[str, str]:
     items = _extract_publish_items(md)
 
     # 去重处理：识别并合并相同类型的重复活动
@@ -449,6 +511,8 @@ def build_publish_markdown(md: str, title: str = "") -> tuple[str, str]:
                     item["body"] = f"**活动要点：** {essence}\n\n{item['body']}"
 
     items = deduplicated
+    if mode == "e":
+        _mode_e_enrich_items(items)
     counts: dict[str, int] = {}
     for item in items:
         category = item["category"]
@@ -456,7 +520,10 @@ def build_publish_markdown(md: str, title: str = "") -> tuple[str, str]:
     has_ai = any(re.search(r"AI|Kimi|Qoder|算力|智能体", i["title"] + i["body"], re.I) for i in items)
     has_points = any(re.search(r"积分|福气值|年费|权益", i["title"] + i["body"]) for i in items)
     has_young = any(re.search(r"MBTI|DIY|贴纸|茶咖", i["title"] + i["body"], re.I) for i in items)
-    if not title:
+    if mode == "e" and not title:
+        week_match = re.search(r"(\d{4}年\d{1,2}月第\d+周)", md[:300])
+        title = f"信用卡周报｜{week_match.group(1) if week_match else '本周'}"
+    elif not title:
         # 从实际条目中提取标题：新卡 + 权益变更各取第一条，用-连接
         new_card_title = None
         change_title = None
@@ -581,6 +648,7 @@ def main() -> int:
     ap.add_argument("--image-root", default="", help="图片相对路径根目录")
     ap.add_argument("--embed-images", action="store_true", help="将找到的本地图片转为 data URI")
     ap.add_argument("--title", default="", help="发布标题；不填则根据内容自动生成")
+    ap.add_argument("--mode", choices=("rule", "e"), default="rule", help="rule=规则提炼；e=规则提炼后使用 LLM 生成受约束摘要")
     args = ap.parse_args()
     source = Path(args.md)
     if not source.is_file():
@@ -588,12 +656,12 @@ def main() -> int:
     raw = source.read_text(encoding="utf-8-sig")
     out = Path(args.output) if args.output else source.with_name(source.stem + "_公众号粘贴版.html")
     image_root = Path(args.image_root).resolve() if args.image_root else None
-    publish_md, title = build_publish_markdown(raw, args.title)
+    publish_md, title = build_publish_markdown(raw, args.title, mode=args.mode)
     body = render_markdown(publish_md, image_root, args.embed_images)
     fragment = f'<div style="max-width:680px;margin:0 auto;padding:20px 16px 32px;background:#fff;font-family:PingFang SC,Microsoft YaHei,sans-serif;line-height:1.8;color:#334155">{body}</div>'
     out.parent.mkdir(parents=True, exist_ok=True); out.write_text(fragment, encoding="utf-8")
     meta_path = Path(args.meta) if args.meta else out.with_suffix(".json")
-    meta_path.write_text(json.dumps({"source": str(source.resolve()), "title": title, "output": str(out.resolve()), "embed_images": args.embed_images, "publish_mode": "compact_editorial"}, ensure_ascii=False, indent=2), encoding="utf-8")
+    meta_path.write_text(json.dumps({"source": str(source.resolve()), "title": title, "output": str(out.resolve()), "embed_images": args.embed_images, "publish_mode": "mode_e" if args.mode == "e" else "compact_editorial"}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[OK] 公众号粘贴 HTML -> {out}"); print(f"[OK] 元数据 -> {meta_path}"); print("操作：浏览器打开 HTML 后全选复制，粘贴到公众号编辑器。")
     return 0
 

@@ -1,6 +1,15 @@
 # 修订记录
 ## Unreleased
 
+### Mode F：价值提炼标题与样式映射修复（2026-08-21）
+
+- **Bug 修复：`parse_docx` 只抓 `pStyle val`（内部 styleId 如 `21`），不解析 `styles.xml` 映射成显示名** → 新增 `_read_style_map`，把 styleId 归一化成 `Heading 2` 这类显示名。`_has_heading_hierarchy` 因此能正确识别标题层级，文档不再被误判为旧式四段式、标题不再回退成机械的"共 N 条"。
+- **Bug 修复：`_has_heading_hierarchy` 只认 `Heading2`/`Heading3` 且大小写敏感** → 改成 `.lower()` 匹配，覆盖 `Heading 1`/`heading 1`/`Heading1` 等 H1-H4 变体。
+- **改进：Mode F 实际走 `src/weekly_report_to_wechat.py`（独立转换器），非 `src/docx_to_wechat.py`** → 在 weekly_report_to_wechat.py 同步"价值提炼标题"逻辑：新增 `_build_value_title`、`_smart_truncate_title`、`_pick_essence_segment`，从条目里按价值等级（🔴 > 🟡 > ⚪）挑前两条不同机构，提炼"机构+活动卖点"生成 `信用卡资讯精选｜浦发境外消费攒积分兑机票...｜长安七夕三平台满减...`。
+- **改进：修 `_priority_from_blocks` 价值等级误判** → 旧逻辑"拼所有 blocks 文本搜 🔴/🟡 emoji"会把散落在子活动正文里的 emoji 误判为整体价值（长安🟡被误判为🔴）。改为只信点评行开头的 emoji，兼容"点评行被拆成 semantic 块"的情况（扫 `🔴/🟡/⚪ + 等级词 —` 开头的块）。
+- **改进：`_smart_truncate_title` 软截断** → 22 字内优先在顿号/逗号/句号处断句保留完整短句，不再留裸省略号；`_pick_essence_segment` 优先挑含数字+利益词（返现/换/赠/积分）的卖点短句，跳过抽象评价（性价比/硬权益/套路）和负面提示（不透明/需抢/波动大）。
+- 验证：`公众号文章整理_20260818-0821_合并点评版.md.docx` 输出标题 `信用卡资讯精选｜浦发境外消费攒积分兑机票、无限卡限时加赠15%里程｜长安七夕三平台满减、电影/鲜花/美食全场景覆盖`，HTML 25,751 字节。
+
 ### Mode F：合并点评稿表格与概览修复（2026-08-14）
 
 - 新增大纲型合并点评稿解析：识别 `Heading 1=总标题` / `Heading 2=机构` / `Heading 3=资讯`，与常规周报的 `Heading1=分类` / `Heading2=条目` 结构分流处理。
@@ -669,4 +678,3 @@
 ### 变更
 - `generate_report.py` 新增目录生成功能
 - `_agent.py` 新增 Step 6
-
