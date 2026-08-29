@@ -21,6 +21,7 @@ AIGC:
 - **sessions_spawn**：明确任务要求，子代理完成后整理结果，路径用computer://
 - **search_web**：关键词具体；多查询一次提交；找不到信息建议联系官方
 - **word-merger：** 批量读取按类别整合去重；从项目根目录运行；**生成带图片Word必须用`generate_merged_docx.py`**，命令示例：`python3 .skills/skill_word-merger/scripts/generate_merged_docx.py --input merged.json --output 输出.docx`
+- **公众号 HTML 排版基线：** `docx_to_wechat.py` 与 `md_to_wechat.py` 统一使用 680px 内容宽度、18px/30px 页面内边距；正文保持 14px，条目标题 16px、行距 1.55，减少移动端滚动负担。长内容应在 Markdown/DOCX 源稿中使用真实列表或分段，避免将多项规则写入单一长段落。
 - **python-docx：** 复杂格式生成（目录/标题/图片/样式）
   - ⚠️ **核心教训：Markdown转Word必丢图片，严禁走Markdown中转！** 必须用脚本直接生成.docx
   - 图片嵌入：用 `run.add_picture(path, width=Inches(4.5))` 插入，居中用 `paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER`

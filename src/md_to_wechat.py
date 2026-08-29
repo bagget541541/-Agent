@@ -586,9 +586,9 @@ def render_markdown(md: str, image_root: Path | None = None, embed: bool = False
             if text:
                 if has_url:
                     rendered = "<br>".join(inline(x, image_root, embed) for x in raw_lines)
-                    out.append(f'<p style="margin:10px 0;color:#334155;font-size:14px;line-height:1.9;text-align:left;word-break:break-all">{rendered}</p>')
+                    out.append(f'<p style="margin:8px 0;color:#334155;font-size:14px;line-height:1.9;text-align:left;word-break:break-all">{rendered}</p>')
                 else:
-                    out.append(f'<p style="margin:10px 0;color:#334155;font-size:14px;line-height:1.9;text-align:justify">{inline(text, image_root, embed)}</p>')
+                    out.append(f'<p style="margin:8px 0;color:#334155;font-size:14px;line-height:1.9;text-align:justify">{inline(text, image_root, embed)}</p>')
             paragraph.clear()
 
     while i < len(lines):
@@ -607,13 +607,13 @@ def render_markdown(md: str, image_root: Path | None = None, embed: bool = False
                     i += 1
                 continue
             if level == 1:
-                out.append(f'<h1 style="font-size:24px;line-height:1.4;color:#0f172a;margin:6px 0 12px;font-weight:700">{inline(title, image_root, embed)}</h1>')
+                out.append(f'<h1 style="font-size:24px;line-height:1.4;color:#0f172a;margin:4px 0 10px;font-weight:700">{inline(title, image_root, embed)}</h1>')
             elif level == 2:
                 color = color_for(title)
-                out.append(f'<div style="margin:26px 0 12px;padding:9px 12px;border-left:4px solid {color};background:#f8fafc"><h2 style="font-size:18px;line-height:1.5;color:#0f172a;margin:0;font-weight:700">{inline(title, image_root, embed)}</h2></div>')
+                out.append(f'<div style="margin:22px 0 10px;padding:9px 12px;border-left:4px solid {color};background:#f8fafc"><h2 style="font-size:18px;line-height:1.5;color:#0f172a;margin:0;font-weight:700">{inline(title, image_root, embed)}</h2></div>')
             else:
                 color = color_for(title)
-                out.append(f'<h3 style="font-size:16px;line-height:1.5;color:{color};margin:20px 0 8px;font-weight:700">{inline(title, image_root, embed)}</h3>')
+                out.append(f'<h3 style="font-size:16px;line-height:1.5;color:{color};margin:16px 0 6px;font-weight:700">{inline(title, image_root, embed)}</h3>')
             i += 1; continue
         if _is_table(lines, i):
             flush(); headers = _cells(lines[i]); i += 2; rows = []
@@ -658,7 +658,7 @@ def main() -> int:
     image_root = Path(args.image_root).resolve() if args.image_root else None
     publish_md, title = build_publish_markdown(raw, args.title, mode=args.mode)
     body = render_markdown(publish_md, image_root, args.embed_images)
-    fragment = f'<div style="max-width:680px;margin:0 auto;padding:20px 16px 32px;background:#fff;font-family:PingFang SC,Microsoft YaHei,sans-serif;line-height:1.8;color:#334155">{body}</div>'
+    fragment = f'<div style="max-width:680px;margin:0 auto;padding:18px 16px 30px;background:#fff;font-family:PingFang SC,Microsoft YaHei,sans-serif;line-height:1.8;color:#334155">{body}</div>'
     out.parent.mkdir(parents=True, exist_ok=True); out.write_text(fragment, encoding="utf-8")
     meta_path = Path(args.meta) if args.meta else out.with_suffix(".json")
     meta_path.write_text(json.dumps({"source": str(source.resolve()), "title": title, "output": str(out.resolve()), "embed_images": args.embed_images, "publish_mode": "mode_e" if args.mode == "e" else "compact_editorial"}, ensure_ascii=False, indent=2), encoding="utf-8")

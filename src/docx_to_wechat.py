@@ -344,7 +344,7 @@ def render_card_item(item: dict, index: int) -> str:
     parts: list[str] = []
     # 标题
     parts.append(
-        f'<h3 style="font-size:17px;line-height:1.5;color:{color};margin:24px 0 6px;font-weight:700">'
+        f'<h3 style="font-size:16px;line-height:1.55;color:{color};margin:20px 0 6px;font-weight:700">'
         f'{index}. {inline(item["title"])}</h3>'
     )
     # 来源
@@ -811,9 +811,9 @@ def render_docx_flow(docx_path: Path, title: str = "") -> str:
                 entry_no += 1
                 if entry_no > 1:
                     out.append('<div style="height:1px;background:#e5e7eb;margin:24px 0"></div>')
-                out.append(f'<h3 style="font-size:17px;line-height:1.5;color:{color};margin:24px 0 6px;font-weight:700">{entry_no}. {inline(text)}</h3>')
+                out.append(f'<h3 style="font-size:16px;line-height:1.55;color:{color};margin:20px 0 6px;font-weight:700">{entry_no}. {inline(text)}</h3>')
             else:
-                out.append(f'<h3 style="font-size:17px;line-height:1.5;color:{color};margin:22px 0 8px;font-weight:700">{inline(text)}</h3>')
+                out.append(f'<h3 style="font-size:16px;line-height:1.55;color:{color};margin:20px 0 8px;font-weight:700">{inline(text)}</h3>')
         elif kind == "h4":
             in_review = text == "专业点评"
             out.append(f'<h4 style="font-size:15px;line-height:1.5;color:{color};margin:4px 0 8px;font-weight:700">{inline(text)}</h4>')
@@ -831,7 +831,7 @@ def render_docx_flow(docx_path: Path, title: str = "") -> str:
     flush_list()
     body = "\n".join(out)
     return (
-        f'<div style="max-width:680px;margin:0 auto;padding:20px 16px 32px;background:#fff;'
+        f'<div style="max-width:680px;margin:0 auto;padding:18px 16px 30px;background:#fff;'
         f'font-family:PingFang SC,Microsoft YaHei,sans-serif;line-height:1.8;color:#334155">{body}</div>'
     )
 
@@ -918,7 +918,7 @@ def render_html(struct: dict, title: str = "") -> str:
 
     body = "\n".join(body_parts)
     fragment = (
-        f'<div style="max-width:680px;margin:0 auto;padding:20px 16px 32px;background:#fff;'
+        f'<div style="max-width:680px;margin:0 auto;padding:18px 16px 30px;background:#fff;'
         f'font-family:PingFang SC,Microsoft YaHei,sans-serif;line-height:1.8;color:#334155">{body}</div>'
     )
     return fragment
