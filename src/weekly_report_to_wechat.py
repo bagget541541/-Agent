@@ -542,6 +542,58 @@ def _pick_essence_segment(body: str) -> str:
     return best
 
 
+def _item_value_score(item: dict, position: int = 0) -> tuple[int, int]:
+    """给普通周报条目排序，优先可量化、可立即参与的权益。"""
+    text = " ".join([
+        str(item.get("title", "")), str(item.get("raw", "")),
+        " ".join(str(b.get("text", b.get("body", ""))) for b in item.get("blocks", [])),
+    ])
+    priority = _PRIORITY_RANK.get(item.get("priority", "常规"), 2)
+    score = (2 - priority) * 100
+    if re.search(r"\d+(?:\.\d+)?%\s*返现|返现[^。；]{0,12}\d+(?:\.\d+)?%", text):
+        score += 90
+    for word, weight in (("立减", 45), ("返现", 42), ("满减", 40), ("免费", 38), ("红包", 35), ("积分", 25), ("里程", 25)):
+        if word in text:
+            score += weight
+            break
+    amounts = [int(v) for v in re.findall(r"(?:满|消费满)(\d+)元", text)]
+    rewards = [int(v) for v in re.findall(r"(?:返|减|立减)(\d+)元", text)]
+    if amounts:
+        score += max(0, 35 - min(amounts) // 300)
+    if rewards:
+        score += min(max(rewards) // 2, 35)
+    if "限量" in text or "先到先得" in text:
+        score += 6
+    if any(word in text for word in ("系统升级", "公告", "暂停服务")):
+        score -= 20
+    return score, -position
+
+
+def _pick_value_items(struct: dict, limit: int = 2) -> list[dict]:
+    """从任意周报结构挑选最多两条精选，先保证机构多样，再按价值补齐。"""
+    items = [item for cat in struct.get("categories", []) for item in cat.get("items", [])]
+    ranked = sorted(enumerate(items), key=lambda pair: _item_value_score(pair[1], pair[0]), reverse=True)
+    picks: list[dict] = []
+    seen_orgs: set[str] = set()
+    for _, item in ranked:
+        title = str(item.get("title", ""))
+        org = title.split("｜", 1)[0].strip() if "｜" in title else _detect_bank(title + " " + str(item.get("raw", "")))[0] if _detect_bank(title + " " + str(item.get("raw", ""))) else ""
+        if org and org in seen_orgs and len(picks) < limit:
+            continue
+        picks.append(item)
+        if org:
+            seen_orgs.add(org)
+        if len(picks) >= limit:
+            break
+    if len(picks) < limit:
+        for _, item in ranked:
+            if item not in picks:
+                picks.append(item)
+            if len(picks) >= limit:
+                break
+    return picks
+
+
 def _build_value_title(struct: dict) -> str | None:
     """从合并点评版文档的条目里，提炼价值最高的两条卖点生成标题。
 
@@ -555,24 +607,12 @@ def _build_value_title(struct: dict) -> str | None:
 
     返回标题字符串，或 None 表示无可用条目（调用方回退到默认标题）。
     """
-    # 收集所有条目，扁平化为 (priority, item) 列表
-    all_items: list[tuple[str, dict]] = []
-    for cat in struct["categories"]:
-        for item in cat["items"]:
-            pri = item.get("priority", "常规")
-            all_items.append((pri, item))
-
-    if not all_items:
+    picks = _pick_value_items(struct)
+    if not picks:
         return None
 
-    # 按价值等级排序（rank 小的优先）
-    all_items.sort(key=lambda x: _PRIORITY_RANK.get(x[0], 3))
-
     picks: list[str] = []
-    seen_orgs: set[str] = set()  # 避免同一机构重复出现
-    for pri, item in all_items:
-        if len(picks) >= 2:
-            break
+    for item in _pick_value_items(struct):
         # 活动名：从 "机构｜活动名" 里取后半段；机构名取前半段
         title_full = item.get("title", "")
         org = ""
@@ -583,12 +623,6 @@ def _build_value_title(struct: dict) -> str | None:
             activity = activity.strip()
         else:
             activity = title_full.strip()
-
-        # 同一机构只取一条（避免浦发🔴+浦发🟡都进标题）
-        org_key = org or activity
-        if org_key in seen_orgs:
-            continue
-        seen_orgs.add(org_key)
 
         # 卖点：activity 优先，缺失时从 blocks 里找点评正文提取 essence
         sell = activity
@@ -1187,13 +1221,10 @@ def render_html(struct: dict, docx_path: Path, mode: str = "rule") -> str:
         week_label = week_match.group(1) if week_match else "本周"
         title = f"信用卡周报｜{week_label}"
         subtitle = "停发、协议更新与高性价比活动：本周持卡人最该关注的资讯"
-    elif not struct.get("outline") and new_card_title and change_title:
-        title = f"{new_card_title} - {change_title}"
-        subtitle = docx_path.stem
     else:
-        # 合并点评版（outline）文档：优先用价值提炼标题
-        value_title = _build_value_title(struct) if struct.get("outline") else None
-        title = value_title or struct["title"] or docx_path.stem
+        # 任意结构均优先用价值提炼标题；无足够卖点时回退到原始标题。
+        value_title = _build_value_title(struct)
+        title = value_title or (f"{new_card_title} - {change_title}" if new_card_title and change_title else struct["title"]) or docx_path.stem
         subtitle = docx_path.stem
 
     # 收集所有条目的链接，供文末汇总
@@ -1219,13 +1250,10 @@ def render_html(struct: dict, docx_path: Path, mode: str = "rule") -> str:
             f'📊 <strong>周报概览</strong> — {esc(subtitle)} · '
             f'本期共 <strong>{total_items}</strong> 条 · {stats_html}'
         )
-        high_value = [
-            item for cat in struct["categories"] for item in cat["items"]
-            if item.get("priority") == "高价值"
-        ]
-        if high_value:
-            names = "、".join(item["title"].split("｜", 1)[0] for item in high_value[:3])
-            overview += f' · 🔴高价值 <strong>{len(high_value)}</strong> 条：{inline(names)}'
+        featured = _pick_value_items(struct)
+        if featured:
+            names = "、".join(item["title"] for item in featured)
+            overview += f' · ⭐本期精选：{inline(names)}'
     else:
         overview = f"📊 <strong>周报概览</strong> — {esc(subtitle)} · 信用卡周报"
     body_parts.append(render_overview_bar(overview))
