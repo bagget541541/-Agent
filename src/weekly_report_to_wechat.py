@@ -353,6 +353,15 @@ def _outline_category(item: dict) -> str:
         [item["title"]]
         + [block.get("text", block.get("body", "")) for block in item["blocks"]]
     )
+    explicit_category = re.search(r"类别[：:]\s*([^\s。；]+)", text)
+    if explicit_category:
+        label = explicit_category.group(1)
+        if "权益变更" in label:
+            return "权益变更"
+        if "新发行" in label or "新卡" in label:
+            return "新卡与权益"
+        if "活动" in label:
+            return "优惠活动"
     if re.search(r"停发|退市|调整|变更|公告|到期|终止", text):
         return "重要提醒"
     if re.search(r"新卡|首发|发行|卡种|Visa.*信用卡|信用卡.*Visa", text, re.I):
@@ -1165,6 +1174,115 @@ def render_footer(generated_on: date) -> str:
     )
 
 
+def _parse_flat_markdown_structure(paras: list[dict], docx_path: Path) -> dict | None:
+    """解析由 Markdown/纯文本粘贴进 Word 后形成的扁平周报。
+
+    这类文档所有段落通常都是 Normal，没有 Heading1/Heading2；文章之间用
+    ``— — —`` 分隔，文章标题可能是 ``#`` 行，也可能只出现在「标题：」字段。
+    旧路由会因此得到 0 条资讯，最终只输出标题和页尾。
+    """
+    texts = [str(p.get("text", "")).strip() for p in paras]
+    if not any(texts):
+        return None
+
+    separator_re = re.compile(r"^(?:—\s*){3,}$")
+    starts: list[int] = []
+    for i, text in enumerate(texts):
+        if text.startswith("# "):
+            starts.append(i)
+            continue
+        if separator_re.match(text):
+            j = i + 1
+            while j < len(texts) and not texts[j]:
+                j += 1
+            if j < len(texts):
+                starts.append(j)
+
+    # 去掉同一篇文章内重复发现的起点，并要求至少两篇才进入该路由。
+    starts = sorted(set(starts))
+    if len(starts) < 2:
+        return None
+
+    def clean_line(value: str) -> str:
+        value = value.strip()
+        # Word 中常见的 "· - **字段：** 内容" 多层列表标记。
+        while re.match(r"^[·•▪▫‣∙-]\s*", value):
+            value = re.sub(r"^[·•▪▫‣∙-]\s*", "", value, count=1)
+        value = re.sub(r"^\*\*([^*：:]+)[：:]\*\*\s*", r"\1：", value)
+        value = re.sub(r"^\*\*([^*]+)\*\*\s*", r"\1：", value)
+        value = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\2", value)
+        return value.strip()
+
+    def title_from(section: list[str]) -> str:
+        for text in section[:10]:
+            if text.startswith("# "):
+                return text[2:].strip()
+            candidate = clean_line(text)
+            match = re.match(r"标题[：:]\s*(.+)$", candidate)
+            if match:
+                return re.sub(r"\*+", "", match.group(1)).strip()
+        return next((clean_line(t) for t in section if clean_line(t)), docx_path.stem)
+
+    def priority_from(section: list[str]) -> tuple[str, str]:
+        for text in section:
+            match = re.search(r"([🔴🟡⚪])\s*([^\s：:—-]+)", text)
+            if not match:
+                continue
+            emoji = match.group(1)
+            label = "高价值" if emoji == "🔴" else "中等" if emoji == "🟡" else "常规"
+            return PRIORITY_COLORS[emoji], label
+        return "#64748b", "常规"
+
+    entries: list[dict] = []
+    for n, start in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(texts)
+        section = texts[start:end]
+        title = title_from(section)
+        blocks: list[dict] = []
+        links: list[dict] = []
+        for p_index in range(start, end):
+            raw = texts[p_index]
+            if not raw or raw.startswith("# ") or separator_re.match(raw):
+                continue
+            line = clean_line(raw)
+            if not line or line in {"核心内容", "关键规则", "权益要点", "价值分析", "活动优先级", "参与/申卡建议", "原文图片", "基本信息"}:
+                continue
+            if line.startswith("### "):
+                line = line[4:].strip()
+            if line.startswith("**") and line.endswith("**"):
+                line = line.strip("*")
+            p_links = paras[p_index].get("links", [])
+            block = _classify_normal(line, p_links)
+            blocks.append(block)
+            links.extend(p_links)
+        color, priority = priority_from(section)
+        entries.append({
+            "title": title,
+            "raw": title,
+            "priority_color": color,
+            "priority": priority,
+            "blocks": blocks,
+            "links": links,
+        })
+
+    if not entries:
+        return None
+    category_order = ("优惠活动", "新卡与权益", "权益变更", "重要提醒")
+    grouped: dict[str, list[dict]] = {name: [] for name in category_order}
+    for item in entries:
+        grouped[_outline_category(item)].append(item)
+    categories = [
+        {"name": name, "raw": name, "color": _h1_color(name), "emoji": _h1_emoji(name), "items": grouped[name]}
+        for name in category_order if grouped[name]
+    ]
+    return {
+        "title": texts[0] or docx_path.stem,
+        "categories": categories,
+        "standalone": [],
+        "outline": False,
+    }
+
+
 def render_html(struct: dict, docx_path: Path, mode: str = "rule") -> str:
     """主渲染入口。"""
     # 去重处理：识别并合并相同类型的重复活动
@@ -1298,6 +1416,10 @@ def convert(docx_path: Path, output: Path | None = None, mode: str = "rule") -> 
     if struct is None:
         paras = parse_docx(docx_path)
         struct = parse_structure(paras)
+        if not any(cat.get("items") for cat in struct.get("categories", [])):
+            flat_struct = _parse_flat_markdown_structure(paras, docx_path)
+            if flat_struct is not None:
+                struct = flat_struct
     fragment = render_html(struct, docx_path, mode=mode)
 
     out = output or docx_path.with_name(docx_path.stem + "_公众号粘贴版.html")
