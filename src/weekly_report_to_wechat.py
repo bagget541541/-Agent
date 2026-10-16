@@ -38,7 +38,13 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 # 复用 docx_to_wechat 的基础能力
-from src.docx_to_wechat import parse_docx, _read_rels, esc, inline
+from src.docx_to_wechat import (
+    convert as convert_document_flow,
+    parse_docx,
+    _read_rels,
+    esc,
+    inline,
+)
 from common.llm_client import LlmClient, _load_apikey_txt_configs
 
 
@@ -1420,6 +1426,14 @@ def convert(docx_path: Path, output: Path | None = None, mode: str = "rule") -> 
             flat_struct = _parse_flat_markdown_structure(paras, docx_path)
             if flat_struct is not None:
                 struct = flat_struct
+
+    # This renderer only understands weekly-report categories.  A document
+    # that does not match that schema used to produce a title/footer shell
+    # with no body.  Preserve the document by using the generic flow renderer.
+    if not any(cat.get("items") for cat in struct.get("categories", [])):
+        result, _title = convert_document_flow(docx_path, output)
+        return result
+
     fragment = render_html(struct, docx_path, mode=mode)
 
     out = output or docx_path.with_name(docx_path.stem + "_公众号粘贴版.html")

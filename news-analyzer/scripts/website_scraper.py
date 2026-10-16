@@ -225,6 +225,24 @@ BANK_CONFIGS["中信银行"] = BankConfig(
     detail_url_pattern=r"/gonggao/news_\d{6}\.shtml$",
 )
 
+# 光大银行（信用卡公告入口；当前官网可能返回反爬挑战页）
+BANK_CONFIGS["光大银行"] = BankConfig(
+    name="光大银行",
+    short_name="光大",
+    list_url="https://www.cebbank.com/cn/xyk/news/",
+    encoding="utf-8",
+    insecure=True,
+    list_item_selector="li, .news-item, .list-item, tr",
+    link_selector=("a", "href"),
+    title_selector=("a", "text"),
+    date_selector=("span.date, .time, .article-date, td:nth-child(2)", "text"),
+    date_format="%Y-%m-%d",
+    detail_title_selector="h1, .title, .article-title",
+    detail_date_selector=".date, .time, .article-date",
+    detail_content_selector=".content, .article-content, #content, .detail-content, .maintext",
+    url_prefix_required="https://www.cebbank.com",
+)
+
 # ── 以下为从 banks_parser_v2.py 迁移的银行配置（排除恒丰/光大/工商） ──
 
 # 华夏银行（banks_parser_v2 中为纯静态列表页，通用选择器即可）
@@ -1419,6 +1437,12 @@ def fetch_list_page(bank: BankConfig) -> list[dict]:
     if not html:
         return results
 
+    # 光大等站点可能返回反爬挑战页：页面看似 200，但没有任何业务 DOM。
+    # 明确诊断，避免把挑战页误判为“列表为空”。
+    if len(html) < 10_000 and ("$_ts" in html or "XssCoMg" in html):
+        print(f"  [⚠] {bank.name} 返回反爬挑战页，未获取到公告列表", file=sys.stderr)
+        return results
+
     soup = BeautifulSoup(html, "html.parser")
 
     items = soup.select(bank.list_item_selector)
@@ -1557,8 +1581,16 @@ def fetch_detail_page(url: str, bank: BankConfig) -> Optional[dict]:
         if soup is None:
             return None
 
+    # 汇丰列表项使用页面内锚点；HTTP 请求不会携带 fragment，必须在本地裁剪对应 expander。
+    fragment = url.split("#", 1)[1] if "#" in url else ""
+    scoped_root = soup
+    if fragment:
+        anchor = soup.find(id=fragment)
+        if anchor:
+            scoped_root = anchor.find_parent("div", class_=lambda value: value and "expander" in value) or anchor.parent
+
     # 标题（优先详情页）
-    title_el = soup.select_one(bank.detail_title_selector)
+    title_el = scoped_root.select_one(bank.detail_title_selector)
     title = title_el.get_text(strip=True) if title_el else ""
     if not title or len(title) < 6:
         if soup.title and soup.title.get_text(strip=True):
@@ -1574,12 +1606,14 @@ def fetch_detail_page(url: str, bank: BankConfig) -> Optional[dict]:
                     break
 
     # 日期
-    date_el = soup.select_one(bank.detail_date_selector)
+    date_el = scoped_root.select_one(bank.detail_date_selector)
     date_str = date_el.get_text(strip=True) if date_el else ""
 
     # 正文
     body = soup.find("body") or soup
-    content_el = soup.select_one(bank.detail_content_selector)
+    content_el = scoped_root.select_one(bank.detail_content_selector)
+    if not content_el and fragment and scoped_root is not soup:
+        content_el = scoped_root
     if content_el:
         # DOM 层过滤：按配置删除噪音节点
         if bank.detail_remove_selectors:

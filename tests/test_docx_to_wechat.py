@@ -3,6 +3,7 @@ from pathlib import Path
 from docx import Document
 
 from src.docx_to_wechat import convert, parse_docx, _looks_like_legacy_four_part
+from src.weekly_report_to_wechat import convert as convert_weekly_report
 
 
 def test_convert_formatted_docx_preserves_document_flow(tmp_path: Path):
@@ -52,4 +53,20 @@ def test_legacy_four_part_detection_unescapes_xml_entities(tmp_path: Path):
     assert _looks_like_legacy_four_part(paras)
     assert any("<200元" in p["text"] for p in paras)
     assert any('关注"门槛"' in p["text"] for p in paras)
+
+
+def test_weekly_converter_falls_back_for_single_article_docx(tmp_path: Path):
+    """A non-weekly document must not silently become an HTML shell."""
+    docx_path = tmp_path / "single_article.docx"
+    doc = Document()
+    doc.add_heading("测试信用卡活动", level=1)
+    doc.add_heading("核心内容", level=2)
+    doc.add_paragraph("测试正文：完成指定消费可享50元立减。")
+    doc.save(docx_path)
+
+    out = convert_weekly_report(docx_path)
+    rendered = out.read_text(encoding="utf-8")
+
+    assert "测试正文：完成指定消费可享50元立减。" in rendered
+    assert rendered.count("<p ") >= 1
 

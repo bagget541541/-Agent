@@ -6,6 +6,17 @@ from md_to_wechat import build_publish_markdown, render_markdown
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_weekly_activity_is_compact_and_actionable():
+    md = """# 周报\n\n## 🏷️ 活动\n\n### 农行活动：满200元随机减99元\n\n**亮点：** 农行信用卡持卡人；2026.10.10；满200元随机减1~99元优惠\n\n**结构化信息：**\n\n- **活动内容**：2026年10月10日至2026年10月31日，在去哪儿旅行APP收银台支付。\n\n[原文链接](https://example.com/a)\n"""
+    publish_md, _ = build_publish_markdown(md)
+    assert "活动要点" not in publish_md
+    assert "亮点：" not in publish_md
+    assert "结构化信息" not in publish_md
+    assert "去哪儿APP" in publish_md
+    assert "农行信用卡" in publish_md
+    assert "满200元随机减99元" in publish_md
+
+
 def test_render_mode_d_sample():
     md = (ROOT / "data" / "mode_d_merged.md").read_text(encoding="utf-8")
     publish_md, title = build_publish_markdown(md)

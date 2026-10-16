@@ -25,6 +25,17 @@ from common.review import generate_review_flags
 from common.utils import safe_truncate
 
 
+def _sentence_bounded_truncate(text: str, max_chars: int) -> str:
+    """Limit display text without cutting through a sentence or numbered section."""
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(text) <= max_chars:
+        return text
+    boundary = re.search(r"[。！？；]", text[: max_chars + 1])
+    if boundary and boundary.end() >= max_chars // 2:
+        return text[:boundary.end()]
+    return text[:max_chars].rsplit("，", 1)[0].rstrip("，、 ") + "…"
+
+
 # ── Internal: structured field generation ─────────────────────────────────
 
 # 公众号文章常见营销引言前缀，结构化构建时应跳过
@@ -192,25 +203,25 @@ def _build_structured_for_category(
         structured["卡亮点"] = ""
         structured["适用人群"] = "信用卡持卡人"
         structured["来源"] = author or url
-        structured["详情"] = safe_truncate(source_text, 500) if source_text else title
+        structured["详情"] = _sentence_bounded_truncate(source_text, 500) if source_text else title
 
     elif category == "活动":
-        structured["活动内容"] = safe_truncate(source_text, 300) if source_text else title
+        structured["活动内容"] = _sentence_bounded_truncate(source_text, 600) if source_text else title
         structured["活动时间"] = ""
         structured["适用人群"] = "信用卡持卡人"
 
     elif category == "权益变更":
         structured["消息时间"] = ""
         structured["影响范围"] = ""
-        structured["变更内容"] = safe_truncate(source_text, 500) if source_text else title
+        structured["变更内容"] = _sentence_bounded_truncate(source_text, 800) if source_text else title
         structured["变更分析"] = ""
 
     elif category == "公告":
-        structured["消息内容"] = safe_truncate(source_text, 500) if source_text else title
+        structured["消息内容"] = _sentence_bounded_truncate(source_text, 800) if source_text else title
         structured["点评"] = ""
 
     else:
-        structured["详细内容"] = safe_truncate(source_text, 500) if source_text else title
+        structured["详细内容"] = _sentence_bounded_truncate(source_text, 800) if source_text else title
 
     return structured
 
@@ -488,7 +499,17 @@ def normalize_item(
 
     # ── 4. 生成 structured ──
     existing_structured = raw_item.get("structured") or {}
-    if existing_structured:
+    # 上游抓取器可能只写入标题或固定长度前缀；这种字段不能覆盖完整正文。
+    # 保留原字段作为证据，但以完整 raw_text 重建面向发布的结构化字段。
+    structured_is_title_only = bool(existing_structured) and any(
+        isinstance(v, str) and v.strip() and v.strip() == title.strip()
+        for v in existing_structured.values()
+    )
+    structured_is_truncated = bool(existing_structured) and any(
+        isinstance(v, str) and v.rstrip().endswith(("...", "…"))
+        for v in existing_structured.values()
+    )
+    if existing_structured and not (structured_is_title_only or structured_is_truncated):
         structured = existing_structured
         structured_evidence = ["保留原始 structured"]
     else:
@@ -502,7 +523,7 @@ def normalize_item(
                 category, title, text,
                 raw_text=raw_text, author=author, url=url,
             )
-            structured_evidence = [f"从正文构建 structured ({category})"]
+            structured_evidence = [f"从完整正文重建 structured ({category})"] if existing_structured else [f"从正文构建 structured ({category})"]
 
     # ── 4.5 生成 structured_clean（去营销引言/噪音版本） ──
     structured_clean: dict[str, str] = {}

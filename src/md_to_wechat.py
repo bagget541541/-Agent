@@ -119,7 +119,8 @@ def _should_deduplicate(title1: str, title2: str, category1: str, category2: str
     score = _similarity_score(title1, title2)
     # 活动/优惠类标题相似度高（如多个"农业银行 xxx 活动"），采用更激进的阈值
     if "活动" in category1 or "优惠" in category1:
-        return score > 0.75
+        # 不以银行/平台不同的标题字符重合误删独立优惠；同源 URL 由调用方单独处理。
+        return score > 0.9
     # 其他类保持原阈值
     return score > 0.8
 
@@ -159,6 +160,67 @@ def _extract_activity_essence(title: str, body: str) -> str:
     return ""
 
 
+def _compact_activity_body(title: str, body: str, activity_time: str) -> str:
+    """生成活动条目的一句式摘要，避免“要点+亮点+结构化信息”重复堆叠。
+
+    摘要只使用标题、已提取的活动时间和正文中可定位的入口/卡种信息；
+    不跨段拼接原文，避免把半句、脚注或下一字段误合并进来。
+    """
+    clean_title = re.sub(r"\s+", " ", title).strip()
+    clean_title = re.sub(r"(活动){2,}", "活动", clean_title)
+    clean_body = re.sub(r"\*\*结构化信息[：:]\*\*|\*\*活动内容[：:]\*\*|\*\*亮点[：:]\*\*", " ", body)
+    clean_body = re.sub(r"\s+", " ", clean_body).strip()
+    # 优先保留正文明确写出的入口；没有时用标题关键词作稳定兜底。
+    entry = ""
+    entry_patterns = [
+        r"【([^】]*(?:APP|掌银|支付|优惠)[^】]*)】",
+        r"“([^”]{1,30}(?:APP|支付)[^”]{0,20})”",
+    ]
+    for pattern in entry_patterns:
+        m = re.search(pattern, clean_body, re.I)
+        if m:
+            entry = m.group(1).strip()
+            break
+    if not entry:
+        keyword_entries = [
+            ("去哪儿", "去哪儿APP"), ("携程", "携程旅行APP"),
+            ("美团", "美团APP"), ("淘宝", "淘宝/天猫APP"),
+            ("天猫", "淘宝/天猫APP"), ("微信", "微信支付"),
+            ("支付宝", "支付宝"), ("掌银", "农行掌银APP"),
+        ]
+        for keyword, value in keyword_entries:
+            if keyword in clean_title or keyword in clean_body:
+                entry = value
+                break
+    bank = ""
+    for name in ("农业银行", "农行", "兴业银行", "交通银行", "交行", "广发银行", "汇丰银行", "汇丰", "招商银行", "中信银行"):
+        if name in clean_title or name in clean_body:
+            bank = {"交行": "交通银行", "汇丰": "汇丰银行"}.get(name, name)
+            break
+    card = f"{bank}信用卡" if bank else "信用卡"
+    if re.search(r"62开头|银联标识", clean_body):
+        card += "（银联标识）"
+    # 保留原文中可执行的条件/奖励句，避免只剩标题导致事实丢失。
+    evidence = []
+    for sentence in re.split(r"(?<=[。！？；])", clean_body):
+        sentence = sentence.strip(" ，")
+        if sentence and (re.search(r"\d", sentence) or re.search(r"满|返|减|赠|每次|每月|一次|名额|限量|不可叠加", sentence)):
+            if sentence not in evidence:
+                evidence.append(sentence)
+        if len("；".join(evidence)) >= 180:
+            break
+    benefit = clean_title.split("：", 1)[1].strip() if "：" in clean_title else clean_title
+    benefit = re.sub(r"（[^）]{0,80}）", "", benefit).strip("。 ")
+    parts = []
+    if activity_time:
+        parts.append(f"活动时间：{activity_time}")
+    parts.append(f"{('在' + entry + '使用') if entry and entry not in clean_title else '使用'}{card}")
+    parts.append(benefit)
+    if evidence:
+        parts.append("；".join(evidence))
+    return "，".join(parts).rstrip("，") + "。"
+
+
 def _parse_llm_json(text: str) -> dict | None:
     text = (text or "").strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
@@ -195,7 +257,7 @@ def _mode_e_enrich_items(items: list[dict]) -> None:
     )
     enriched = 0
     for item in items:
-        source = f"分类：{item.get('category','')}\n标题：{item.get('title','')}\n原文：{item.get('body','')}"
+        source = f"分类：{item.get('category','')}\n标题：{item.get('title','')}\n原文：{item.get('raw_body') or item.get('body','')}"
         response = None
         for offset in range(len(clients)):
             index = (active_index + offset) % len(clients)
@@ -233,24 +295,28 @@ def _extract_activity_time(body: str) -> str:
             return m.group(0).strip()
         return ""
 
-    # 1. 结构化字段：- **活动时间**：2026.07.31（可能带"周末有效"等附加文本）
-    m = re.search(r"\*\*活动时间\*\*\s*[：:]\s*([^\n]+)", body)
-    if m:
-        r = _match_time(m.group(1))
-        if r:
-            return r
-    # 2. 显式标签：活动时间/活动期间：...（同样只取日期部分）
-    m = re.search(r"活动(?:时间|期间)[：:]\s*([^\n。；;]+)", body)
-    if m:
-        r = _match_time(m.group(1))
-        if r:
-            return r
-    # 3. 区间：自X至Y / X至Y
-    m = re.search(r"(?:自)?(" + date + r")[^。；;\n]*?至(" + date + r")", body)
+    # 先去掉编辑稿中的亮点/发布时间，避免把抓取日期误当成活动开始日。
+    body_for_time = re.sub(r"^\*\*亮点[：:].*$", "", body, flags=re.M)
+    body_for_time = re.sub(r"^生成时间[：:].*$", "", body_for_time, flags=re.M)
+
+    # 优先从“活动内容”后的正文寻找真实活动区间，避免把抓取日期当成开始日。
+    scoped = body_for_time.split("活动内容", 1)[-1]
+    m = re.search(r"(?:自)?(" + date + r")[^。；;\n]*?至(" + date + r")", scoped)
     if m:
         return f"{m.group(1)}至{m.group(2)}"
-    # 4. 兜底：正文首次出现的完整日期
-    m = re.search(date, body)
+    # 其次读取显式活动时间字段。
+    m = re.search(r"\*\*活动时间\*\*\s*[：:]\s*([^\n]+)", body_for_time)
+    if m:
+        r = _match_time(m.group(1))
+        if r:
+            return r
+    m = re.search(r"活动(?:时间|期间)[：:]\s*([^\n。；;]+)", body_for_time)
+    if m:
+        r = _match_time(m.group(1))
+        if r:
+            return r
+    # 兜底：正文首次出现的完整日期
+    m = re.search(date, scoped)
     if m:
         return m.group(0)
     return ""
@@ -341,7 +407,7 @@ def _clean_publish_body(body: str) -> str:
     lines = body.splitlines()
     kept = []
     dropping = False
-    drop_structured_fields = {"活动内容", "消息内容"}
+    drop_structured_fields = {"活动内容", "消息内容", "原文摘要"}
     skip_block = False
 
     for i, line in enumerate(lines):
@@ -369,6 +435,8 @@ def _clean_publish_body(body: str) -> str:
         if highlight_match:
             highlight_text = _clean_highlight(highlight_match.group(1))
             if highlight_text:
+                # 活动条目由 build_publish_markdown 统一生成一句式摘要，
+                # 这里不再保留原始亮点，避免与活动内容重复。
                 kept.append(f"**亮点：** {highlight_text}")
             continue
 
@@ -453,6 +521,12 @@ def _extract_publish_items(md: str) -> list[dict]:
                 continue
             body_lines.append(line)
         raw_body = "\n".join(body_lines).strip()
+        # 汇丰详情页可能把多个 expander 拼进正文；优先使用正文中的正式公告标题，
+        # 避免“尊敬的客户”或获奖名单成为周报标题。
+        if "汇丰" in title and ("尊敬的客户" in title or len(title) < 12):
+            formal = re.search(r"关于汇丰中国信用卡申请条件调整公告", raw_body)
+            if formal:
+                title = formal.group(0)
         body = _clean_publish_body(raw_body)
         category = ""
         m = re.search(r"\*\*属性\*\*\s*[：:]\s*([^｜|\n]+)", body)
@@ -472,6 +546,7 @@ def _extract_publish_items(md: str) -> list[dict]:
             "title": title,
             "category": category,
             "body": body,
+            "raw_body": raw_body,
             "source_url": source_url,
             "activity_time": activity_time,
         })
@@ -487,7 +562,8 @@ def build_publish_markdown(md: str, title: str = "", mode: str = "rule") -> tupl
     for i, item in enumerate(items):
         is_duplicate = False
         for j in range(i):
-            if _should_deduplicate(item["title"], items[j]["title"], item["category"], items[j]["category"]):
+            same_url = item.get("source_url") and item.get("source_url") == items[j].get("source_url")
+            if same_url or _should_deduplicate(item["title"], items[j]["title"], item["category"], items[j]["category"]):
                 # 标记为重复但不跳过，而是添加重复标记
                 is_duplicate = True
                 break
@@ -502,13 +578,11 @@ def build_publish_markdown(md: str, title: str = "", mode: str = "rule") -> tupl
             activity_time = item.get("activity_time", "")
             if activity_time and "**活动时间**：" not in item["body"]:
                 item["body"] = f"**活动时间**： {activity_time}\n\n{item['body']}"
-            essence = _extract_activity_essence(item["title"], item["body"])
-            if essence:
-                # 在亮点前添加提炼的内容
-                if "**亮点：**" in item["body"]:
-                    item["body"] = item["body"].replace("**亮点：**", f"**活动要点：** {essence}\n\n**亮点：**")
-                else:
-                    item["body"] = f"**活动要点：** {essence}\n\n{item['body']}"
+            # 活动条目只输出一条读者可直接执行的核心句。
+            # 原文链接仍在文末保留，完整细则不再复制到公众号正文。
+            item["body"] = _compact_activity_body(
+                item["title"], item.get("raw_body", item["body"]), activity_time
+            )
 
     items = deduplicated
     if mode == "e":
