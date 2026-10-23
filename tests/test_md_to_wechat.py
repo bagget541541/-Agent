@@ -39,6 +39,12 @@ def test_render_escapes_raw_html():
     assert "&lt;script&gt;" in html
 
 
+def test_render_markdown_link_keeps_raw_url_for_wechat():
+    html = render_markdown("[活动规则](https://example.com/rules)")
+    assert "https://example.com/rules" in html
+    assert "<a " not in html
+
+
 def test_render_weekly_report_markdown_without_numbered_items():
     md = (ROOT / "data" / "Weekly_Report_2026年7月第4周.md").read_text(encoding="utf-8")
     publish_md, title = build_publish_markdown(md)

@@ -2,8 +2,28 @@ from pathlib import Path
 
 from docx import Document
 
-from src.docx_to_wechat import convert, parse_docx, _looks_like_legacy_four_part
-from src.weekly_report_to_wechat import convert as convert_weekly_report
+from src.docx_to_wechat import convert, parse_docx, _looks_like_legacy_four_part, inline, render_raw_links
+from src.weekly_report_to_wechat import convert as convert_weekly_report, _render_semantic
+
+
+def test_docx_converter_renders_raw_urls_without_anchor_tags():
+    assert "https://example.com/a" in inline("https://example.com/a")
+    assert "<a " not in inline("https://example.com/a")
+    rendered = render_raw_links([{"title": "活动规则", "url": "https://example.com/a"}])
+    assert "活动规则<br>https://example.com/a" in rendered
+    assert "<a " not in rendered
+
+
+def test_weekly_report_converter_renders_raw_urls_without_anchor_tags():
+    rendered = _render_semantic({
+        "prefix": "活动内容",
+        "color": "#64748b",
+        "body": "https://example.com/a",
+        "links": [{"url": "https://example.com/b", "text": "备用链接"}],
+    })
+    assert "https://example.com/a" in rendered
+    assert "https://example.com/b" in rendered
+    assert "<a " not in rendered
 
 
 def test_convert_formatted_docx_preserves_document_flow(tmp_path: Path):

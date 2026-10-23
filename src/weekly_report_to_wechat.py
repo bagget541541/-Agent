@@ -1013,7 +1013,7 @@ def _render_block(b: dict, item: dict) -> str:
     if t == "paragraph":
         rendered = inline(b["text"])
         for lnk in b.get("links", []):
-            rendered += f' <a href="{esc(lnk["url"])}" style="color:#0ea5e9;text-decoration:none">{esc(lnk["text"] or lnk["url"])}</a>'
+            rendered += f' {esc(lnk["url"])}'
         return (
             f'<p style="font-size:12px;color:#475569;margin:4px 0;'
             f'line-height:1.6">{rendered}</p>'
@@ -1070,8 +1070,7 @@ def _render_semantic(b: dict) -> str:
             return ""
         return (
             f'<div style="margin-top:6px;font-size:11px;color:#94a3b8;'
-            f'word-break:break-all">{esc(prefix)} '
-            f'<a href="{esc(url)}" style="color:#0ea5e9;text-decoration:none">{esc(url)}</a></div>'
+            f'word-break:break-all">{esc(prefix)} {esc(url)}</div>'
         )
 
     # 清理语义块中的垃圾内容
@@ -1089,7 +1088,7 @@ def _render_semantic(b: dict) -> str:
     rendered_body = inline(body)
     # 追加 links
     for lnk in links:
-        rendered_body += f' <a href="{esc(lnk["url"])}" style="color:#0ea5e9;text-decoration:none">{esc(lnk["text"] or lnk["url"])}</a>'
+        rendered_body += f' {esc(lnk["url"])}'
 
     if is_block:
         return (

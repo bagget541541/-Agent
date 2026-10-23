@@ -184,10 +184,11 @@ def inline(text: str) -> str:
         tokens.append(value)
         return f"\x00{len(tokens) - 1}\x00"
 
-    # 先占位 URL（避免被 esc 转义破坏）
+    # 先占位 URL。公众号编辑器粘贴 HTML 时可能丢弃 <a> 的 href，
+    # 所以输出 URL 明文，让编辑器自行识别链接。
     text = re.sub(
         r"(https?://[^\s）)]+)",
-        lambda m: hold(f'<a href="{esc(m.group(1))}" style="color:#2563eb;text-decoration:none">{esc(m.group(1))}</a>'),
+        lambda m: hold(esc(m.group(1))),
         text,
     )
     text = esc(text)
@@ -403,7 +404,7 @@ def render_raw_links(raw_links: list[dict]) -> str:
         title = lnk["title"] or lnk["url"]
         items.append(
             f'<li style="margin:6px 0;line-height:1.7;font-size:13px">'
-            f'<a href="{esc(lnk["url"])}" style="color:#2563eb;text-decoration:none">{inline(title)}</a></li>'
+            f'{inline(title)}<br>{esc(lnk["url"])}</li>'
         )
     out.append(
         f'<ol style="margin:10px 0;padding-left:24px;color:#334155">{"".join(items)}</ol>'

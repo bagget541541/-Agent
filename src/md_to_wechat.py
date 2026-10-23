@@ -49,7 +49,9 @@ def inline(text: str, image_root: Path | None, embed: bool) -> str:
 
     text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", lambda m: hold(image_html(m.group(1), m.group(2), image_root, embed)), text)
     text = esc(text)
-    text = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2" style="color:#2563eb;text-decoration:none">\1</a>', text)
+    # 公众号编辑器在粘贴 HTML 时可能丢弃外链 <a> 的 href。保留原始 URL
+    # 明文，编辑器才能自行识别为可访问链接。
+    text = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"\2", text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"\x60([^\x60]+)\x60", r'<span style="font-family:monospace;background:#f1f5f9;padding:1px 4px;border-radius:3px">\1</span>', text)
     text = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", text)
