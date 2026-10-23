@@ -392,7 +392,7 @@ python weekly_report_to_wechat.py "data/Weekly_Report_2026年7月第3周.docx" \
 
 - 仅依据该条资讯原文生成摘要与行动建议；日期、金额、门槛等数字必须能在原文中回查。
 - 模型输出格式或事实回查不通过时，跳过该条摘要，保留规则模式的原有输出。
-- `apikey.txt` 支持以空行分隔多个兼容 API 通道，按顺序故障切换；未提供模型名时，对已知中转地址使用默认模型。
+- `apikey.txt` 支持以空行分隔多个兼容 API 通道；默认客户端使用第一个有效通道，未提供模型名时对已知中转地址采用默认模型。设置 `LLM_PROVIDER=apikey` 可显式选择文件通道，指定其他 provider 时仍使用对应环境变量配置。
 
 **Mode E: 公众号发布 HTML**
 - 默认读取 data/mode_d_merged.md

@@ -126,7 +126,10 @@ def _load_apikey_txt_configs() -> list[dict]:
 
     configs: list[dict] = []
     # Known relay defaults when apikey.txt does not include a model line.
-    host_models = {"api.qnaigc.com": "qwen-turbo"}
+    host_models = {
+        "127.0.0.1:8788": "deepseek-v4.1-flash",
+        "api.qnaigc.com": "qwen-turbo",
+    }
     blocks = re.split(r"(?:\r?\n){2,}", raw.strip())
     for block in blocks:
         lines = [line.strip() for line in block.splitlines() if line.strip()]
@@ -194,8 +197,24 @@ def _get_provider_config(provider: str = None) -> dict:
 
     环境变量未设时，回退读取 ~/.llm_config.json（兼容 mimo 等文件配置场景）。
     """
-    provider = provider or os.environ.get("LLM_PROVIDER", "groq").lower()
+    requested_provider = provider or os.environ.get("LLM_PROVIDER")
 
+    # apikey.txt 的首个通道是默认通道。显式 provider 或 LLM_PROVIDER
+    # 仍保留环境变量优先级，供调用方强制选择通道。
+    if not requested_provider or requested_provider.lower() in {"apikey", "apikey.txt"}:
+        file_cfg = _load_file_config()
+    else:
+        file_cfg = None
+    if file_cfg and file_cfg.get("api_key") and file_cfg.get("api_base"):
+        return {
+            "api_key": file_cfg["api_key"],
+            "model": file_cfg.get("model") or "default",
+            "url": file_cfg["api_base"].rstrip("/") + "/chat/completions",
+            "key_error": "",
+            "provider": "apikey.txt",
+        }
+
+    provider = (requested_provider or "groq").lower()
     cfg = _ENV_PROVIDERS.get(provider, _ENV_PROVIDERS["openrouter"])
     api_key = os.environ.get(cfg["api_key_var"], "")
 

@@ -86,7 +86,7 @@ class TestLlmClientResolveExplicit:
             client = LC(api_key="sk-test")
             # 文件兜底生效，resolve 成功，但 key 来自 apikey.txt
             assert client._resolve() is True
-            assert client._resolved_provider == "groq"
+            assert client._resolved_provider == "apikey.txt"
 
     def test_base_only_not_resolved(self):
         """仅有 api_base 缺 api_key 时，从 apikey.txt 兜底加载 → resolve 成功"""
@@ -143,7 +143,9 @@ class TestLlmClientResolveEnv:
             # 清除 env var 后，apikey.txt 兜底提供 groq 凭证
             client = LlmClient()
             assert client._resolve() is True
-            assert client._resolved_provider == "groq"
+            assert client._resolved_provider == "apikey.txt"
+            assert client._resolved_url == "http://127.0.0.1:8788/v1/chat/completions"
+            assert client.model == "deepseek-v4.1-flash"
 
     def test_provider_from_llm_provider_env(self):
         """LLM_PROVIDER 环境变量指定 provider，且对应 key 已设置"""
